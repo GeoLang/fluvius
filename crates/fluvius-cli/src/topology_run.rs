@@ -443,8 +443,9 @@ path = "{}"
 type = "file"
 path = "{}"
 "#,
-            input.display(),
-            output.display()
+            // forward slashes keep the toml valid on windows paths
+            input.display().to_string().replace('\\', "/"),
+            output.display().to_string().replace('\\', "/")
         );
 
         let config = parse_topology(&toml).unwrap();
