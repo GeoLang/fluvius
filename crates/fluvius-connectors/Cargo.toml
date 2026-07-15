@@ -4,15 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+kafka = ["dep:rdkafka"]
+mqtt = ["dep:rumqttc"]
+
 [dependencies]
 fluvius-core = { path = "../fluvius-core" }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.26"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-async-trait = "0.1"
 futures = "0.3"
 thiserror = "2"
+# kafka: vendored librdkafka via cmake so CI needs no system libs
+rdkafka = { version = "0.39", features = ["cmake-build", "tokio"], optional = true }
+rumqttc = { version = "0.25", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -31,8 +31,8 @@ Zero JVM. Sub-MB footprint. Single binary.
 
 - **WebSocket** — Source and sink for real-time browser/client integration
 - **File** — JSON lines input/output
-- **Kafka** — Consumer source and producer sink with consumer groups
-- **MQTT** — IoT device integration with QoS 0/1/2 support
+- **Kafka** (rdkafka): consumer source and producer sink over JSON events, consumer groups. Build with `--features kafka` (vendored librdkafka via cmake, no system libs needed).
+- **MQTT** (rumqttc): IoT pub/sub source and sink over JSON events, configurable QoS 0/1/2. Build with `--features mqtt` (pure Rust).
 
 ### Operations
 
@@ -47,6 +47,7 @@ Zero JVM. Sub-MB footprint. Single binary.
 # Build from source
 git clone https://github.com/GeoLang/fluvius.git
 cd fluvius && cargo build --release
+# Kafka/MQTT topologies need their features: cargo build --release --features kafka,mqtt
 
 # Run with a TOML topology
 fluvius run --topology pipeline.toml
@@ -98,6 +99,8 @@ dir = "/var/lib/fluvius/checkpoints"
 interval_secs = 30
 max_retained = 5
 ```
+
+`run --topology` wires the configured source and sink (file, websocket, kafka, mqtt) and applies `filter` operators. Stateful geo operators (geofence, proximity, trajectory) run via their own subcommands.
 
 ## Architecture
 

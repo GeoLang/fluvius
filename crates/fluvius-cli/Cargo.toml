@@ -8,6 +8,10 @@ license.workspace = true
 name = "fluvius"
 path = "src/main.rs"
 
+[features]
+kafka = ["fluvius-connectors/kafka"]
+mqtt = ["fluvius-connectors/mqtt"]
+
 [dependencies]
 fluvius-core = { path = "../fluvius-core" }
 fluvius-geo = { path = "../fluvius-geo" }
@@ -16,3 +20,6 @@ clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 geo = "0.29"
 serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

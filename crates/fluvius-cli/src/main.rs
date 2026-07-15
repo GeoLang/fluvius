@@ -1,5 +1,7 @@
 //! Fluvius CLI — real-time geospatial stream processor.
 
+mod topology_run;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -8,6 +10,7 @@ use fluvius_connectors::file;
 use fluvius_core::event::Event;
 use fluvius_core::operator::FilterOperator;
 use fluvius_core::pipeline::Pipeline;
+use fluvius_core::topology::load_topology;
 use fluvius_geo::geofence::{GeofenceOperator, GeofenceZone};
 use fluvius_geo::proximity::ProximityOperator;
 use fluvius_geo::trajectory::TrajectoryOperator;
@@ -22,17 +25,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Process events from a JSON lines file
+    /// Process events from a JSON lines file, or run a full TOML topology
     Run {
-        /// Input JSONL file
+        /// Input JSONL file (required unless --topology is given)
         #[arg(short, long)]
-        input: PathBuf,
-        /// Output JSONL file
+        input: Option<PathBuf>,
+        /// Output JSONL file (required unless --topology is given)
         #[arg(short, long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
         /// Filter: minimum speed in m/s
         #[arg(long)]
         min_speed: Option<f64>,
+        /// Run a declarative pipeline from a TOML topology file
+        #[arg(long)]
+        topology: Option<PathBuf>,
     },
     /// Start WebSocket server for live event processing
     Serve {
@@ -84,7 +90,8 @@ async fn main() {
             input,
             output,
             min_speed,
-        } => cmd_run(&input, &output, min_speed).await,
+            topology,
+        } => cmd_run(input, output, min_speed, topology).await,
         Command::Serve {
             source_bind,
             sink_bind,
@@ -99,7 +106,33 @@ async fn main() {
     }
 }
 
-async fn cmd_run(input: &std::path::Path, output: &std::path::Path, min_speed: Option<f64>) {
+async fn cmd_run(
+    input: Option<PathBuf>,
+    output: Option<PathBuf>,
+    min_speed: Option<f64>,
+    topology: Option<PathBuf>,
+) {
+    if let Some(topology_path) = topology {
+        let config = load_topology(&topology_path).unwrap_or_else(|e| {
+            eprintln!("Error loading topology: {e}");
+            std::process::exit(1);
+        });
+        if let Err(e) = topology_run::run_topology(config).await {
+            eprintln!("Error running topology: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    let (Some(input), Some(output)) = (input, output) else {
+        eprintln!("Error: --input and --output are required unless --topology is given");
+        std::process::exit(1);
+    };
+
+    cmd_run_file(&input, &output, min_speed).await;
+}
+
+async fn cmd_run_file(input: &std::path::Path, output: &std::path::Path, min_speed: Option<f64>) {
     let events = file::read_jsonl(input).await.unwrap_or_else(|e| {
         eprintln!("Error reading input: {e}");
         std::process::exit(1);

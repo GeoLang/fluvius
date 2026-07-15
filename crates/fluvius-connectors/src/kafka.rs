@@ -1,8 +1,13 @@
-//! Kafka connector — produce/consume events via Apache Kafka.
+//! Kafka connector, produce/consume events via Apache Kafka (rdkafka).
 
-use async_trait::async_trait;
-use fluvius_core::event::Event;
 use std::time::Duration;
+
+use fluvius_core::event::{Event, OutputEvent};
+use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::message::Message;
+use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::util::Timeout;
 use tokio::sync::mpsc;
 
 /// Kafka connection configuration.
@@ -31,9 +36,34 @@ impl KafkaConfig {
         self.group_id = Some(group.into());
         self
     }
+
+    /// Reject configs that cannot connect.
+    pub fn validate(&self) -> Result<(), KafkaError> {
+        if self.brokers.is_empty() || self.brokers.iter().any(|b| b.trim().is_empty()) {
+            return Err(KafkaError::Config("at least one broker is required".into()));
+        }
+        if self.topic.trim().is_empty() {
+            return Err(KafkaError::Config("topic must not be empty".into()));
+        }
+        Ok(())
+    }
+
+    fn bootstrap_servers(&self) -> String {
+        self.brokers.join(",")
+    }
 }
 
-/// Kafka consumer source — reads events from a Kafka topic.
+/// Serialize an output event to a JSON payload.
+fn encode_output(event: &OutputEvent) -> Result<Vec<u8>, KafkaError> {
+    serde_json::to_vec(event).map_err(|e| KafkaError::Serialization(e.to_string()))
+}
+
+/// Deserialize a JSON payload into an input event.
+fn decode_event(bytes: &[u8]) -> Result<Event, KafkaError> {
+    serde_json::from_slice(bytes).map_err(|e| KafkaError::Serialization(e.to_string()))
+}
+
+/// Kafka consumer source, reads events from a Kafka topic.
 pub struct KafkaSource {
     config: KafkaConfig,
 }
@@ -43,18 +73,47 @@ impl KafkaSource {
         Self { config }
     }
 
-    /// Start consuming events into the given channel.
-    /// NOTE: This is a skeleton — actual Kafka integration requires `rdkafka`.
-    /// The interface is production-ready; swap in rdkafka when deploying.
-    pub async fn start(&self, _sender: mpsc::Sender<Event>) -> Result<(), KafkaError> {
-        // In production, this would:
-        // 1. Create a StreamConsumer from rdkafka
-        // 2. Subscribe to self.config.topic
-        // 3. Poll messages, deserialize to Event, send to channel
-        Err(KafkaError::NotConfigured(format!(
-            "Kafka consumer for topic '{}' — add rdkafka dependency for production use",
-            self.config.topic
-        )))
+    /// Consume events into the given channel until the receiver is dropped.
+    pub async fn start(&self, sender: mpsc::Sender<Event>) -> Result<(), KafkaError> {
+        self.config.validate()?;
+        let consumer: StreamConsumer = ClientConfig::new()
+            .set("bootstrap.servers", self.config.bootstrap_servers())
+            .set(
+                "group.id",
+                self.config
+                    .group_id
+                    .clone()
+                    .unwrap_or_else(|| "fluvius".to_string()),
+            )
+            .set("client.id", &self.config.client_id)
+            .set("enable.auto.commit", "true")
+            .set("auto.offset.reset", "earliest")
+            .create()
+            .map_err(|e| KafkaError::Connection(e.to_string()))?;
+
+        consumer
+            .subscribe(&[&self.config.topic])
+            .map_err(|e| KafkaError::Connection(e.to_string()))?;
+
+        loop {
+            match consumer.recv().await {
+                Ok(msg) => {
+                    let Some(payload) = msg.payload() else {
+                        continue;
+                    };
+                    match decode_event(payload) {
+                        Ok(event) => {
+                            if sender.send(event).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => eprintln!("Warning: skipping malformed kafka message: {e}"),
+                    }
+                }
+                Err(e) => return Err(KafkaError::Connection(e.to_string())),
+            }
+        }
+        Ok(())
     }
 
     pub fn config(&self) -> &KafkaConfig {
@@ -62,22 +121,36 @@ impl KafkaSource {
     }
 }
 
-/// Kafka producer sink — writes events to a Kafka topic.
+/// Kafka producer sink, writes output events to a Kafka topic.
 pub struct KafkaSink {
     config: KafkaConfig,
+    producer: FutureProducer,
 }
 
 impl KafkaSink {
-    pub fn new(config: KafkaConfig) -> Self {
-        Self { config }
+    /// Build a producer connected to the configured brokers.
+    pub fn new(config: KafkaConfig) -> Result<Self, KafkaError> {
+        config.validate()?;
+        let producer: FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", config.bootstrap_servers())
+            .set("client.id", &config.client_id)
+            .create()
+            .map_err(|e| KafkaError::Connection(e.to_string()))?;
+        Ok(Self { config, producer })
     }
 
-    /// Send an event to Kafka.
-    pub async fn send(&self, _event: &Event) -> Result<(), KafkaError> {
-        Err(KafkaError::NotConfigured(format!(
-            "Kafka producer for topic '{}' — add rdkafka dependency for production use",
-            self.config.topic
-        )))
+    /// Publish an output event, keyed by source entity id.
+    pub async fn send(&self, event: &OutputEvent) -> Result<(), KafkaError> {
+        let payload = encode_output(event)?;
+        let key = event.source_event.entity_id.clone();
+        let record = FutureRecord::to(&self.config.topic)
+            .payload(&payload)
+            .key(&key);
+        self.producer
+            .send(record, Timeout::After(Duration::from_secs(5)))
+            .await
+            .map_err(|(e, _)| KafkaError::Connection(e.to_string()))?;
+        Ok(())
     }
 
     pub fn config(&self) -> &KafkaConfig {
@@ -88,25 +161,12 @@ impl KafkaSink {
 /// Kafka-related errors.
 #[derive(Debug, thiserror::Error)]
 pub enum KafkaError {
-    #[error("Kafka not configured: {0}")]
-    NotConfigured(String),
+    #[error("Kafka config error: {0}")]
+    Config(String),
     #[error("Kafka connection error: {0}")]
     Connection(String),
     #[error("Serialization error: {0}")]
     Serialization(String),
-}
-
-/// Trait for connectors that can produce events.
-#[async_trait]
-pub trait EventSource: Send + Sync {
-    async fn start(&self, sender: mpsc::Sender<Event>) -> Result<(), Box<dyn std::error::Error>>;
-}
-
-/// Trait for connectors that can consume events.
-#[async_trait]
-pub trait EventSink: Send + Sync {
-    async fn send(&self, event: &Event) -> Result<(), Box<dyn std::error::Error>>;
-    async fn flush(&self) -> Result<(), Box<dyn std::error::Error>>;
 }
 
 #[cfg(test)]
@@ -121,12 +181,135 @@ mod tests {
         assert_eq!(config.group_id, Some("fluvius-group".to_string()));
     }
 
+    #[test]
+    fn test_kafka_config_validate() {
+        assert!(
+            KafkaConfig::new(vec!["localhost:9092".into()], "events")
+                .validate()
+                .is_ok()
+        );
+        assert!(KafkaConfig::new(vec![], "events").validate().is_err());
+        assert!(
+            KafkaConfig::new(vec!["localhost:9092".into()], "")
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_encode_decode_roundtrip() {
+        let event = Event::now("v1", 1.0, 2.0).with_speed(9.5);
+        let output = OutputEvent {
+            source_event: event.clone(),
+            operator: "geofence".into(),
+            payload: serde_json::json!({"zone": "depot"}),
+        };
+        let bytes = encode_output(&output).unwrap();
+        let decoded: OutputEvent = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.operator, "geofence");
+        assert_eq!(decoded.source_event.entity_id, "v1");
+
+        let event_bytes = serde_json::to_vec(&event).unwrap();
+        let decoded_event = decode_event(&event_bytes).unwrap();
+        assert_eq!(decoded_event.entity_id, "v1");
+        assert_eq!(decoded_event.speed, Some(9.5));
+    }
+
+    #[test]
+    fn test_decode_rejects_garbage() {
+        assert!(decode_event(b"not json").is_err());
+    }
+
+    /// Round-trip through a real broker. Needs docker; run with:
+    /// `cargo test -p fluvius-connectors --features kafka -- --ignored kafka_broker`
     #[tokio::test]
-    async fn test_kafka_source_not_configured() {
-        let config = KafkaConfig::new(vec!["localhost:9092".to_string()], "test");
+    #[ignore]
+    async fn kafka_broker_roundtrip() {
+        use std::process::Command;
+
+        let name = "fluvius-kafka-test";
+        let _ = Command::new("docker").args(["rm", "-f", name]).output();
+        let run = Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "-d",
+                "--name",
+                name,
+                "-p",
+                "19092:19092",
+                "docker.redpanda.com/redpandadata/redpanda:latest",
+                "redpanda",
+                "start",
+                "--overprovisioned",
+                "--smp",
+                "1",
+                "--memory",
+                "512M",
+                "--reserve-memory",
+                "0M",
+                "--node-id",
+                "0",
+                "--check=false",
+                "--kafka-addr",
+                "PLAINTEXT://0.0.0.0:19092",
+                "--advertise-kafka-addr",
+                "PLAINTEXT://127.0.0.1:19092",
+            ])
+            .output()
+            .expect("docker run");
+        assert!(run.status.success(), "docker run failed: {run:?}");
+
+        // let the broker come up
+        tokio::time::sleep(Duration::from_secs(8)).await;
+
+        // create the topic up front so the consumer does not hit UnknownTopicOrPartition
+        let created = Command::new("docker")
+            .args(["exec", name, "rpk", "topic", "create", "fluvius-events"])
+            .output()
+            .expect("rpk topic create");
+        assert!(created.status.success(), "topic create failed: {created:?}");
+
+        let config = KafkaConfig::new(vec!["127.0.0.1:19092".into()], "fluvius-events")
+            .with_group("fluvius-test");
+        let sink = KafkaSink::new(config.clone()).expect("sink");
         let source = KafkaSource::new(config);
-        let (tx, _rx) = mpsc::channel(10);
-        let result = source.start(tx).await;
-        assert!(result.is_err());
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let consume = tokio::spawn(async move { source.start(tx).await });
+
+        // give the consumer time to join and subscribe
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let output = OutputEvent {
+            source_event: Event::now("truck-7", -1.0, 2.0),
+            operator: "geofence".into(),
+            payload: serde_json::json!({"zone": "depot"}),
+        };
+        // publish an Event-shaped payload the source can decode
+        let event_producer: FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", "127.0.0.1:19092")
+            .create()
+            .unwrap();
+        let event_bytes = serde_json::to_vec(&output.source_event).unwrap();
+        event_producer
+            .send(
+                FutureRecord::<(), _>::to("fluvius-events").payload(&event_bytes),
+                Timeout::After(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap();
+
+        let received = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+            .await
+            .expect("timed out waiting for event")
+            .expect("channel closed");
+        assert_eq!(received.entity_id, "truck-7");
+
+        // sink also publishes cleanly
+        sink.send(&output).await.expect("sink send");
+
+        consume.abort();
+        let _ = Command::new("docker").args(["rm", "-f", name]).output();
     }
 }
