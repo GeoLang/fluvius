@@ -53,8 +53,8 @@ cd fluvius && cargo build --release
 fluvius run --topology pipeline.toml
 
 # Or use individual commands
-fluvius geofence --input events.jsonl --zone "warehouse:10.0,20.0,0.01"
-fluvius proximity --input events.jsonl --radius 100.0
+fluvius geofence --input events.jsonl --bounds "10.0,20.0,10.5,20.5" --zone-name warehouse
+fluvius proximity --input events.jsonl --threshold 100.0
 fluvius trajectory --input events.jsonl --max-speed 50.0
 
 # Live WebSocket processing

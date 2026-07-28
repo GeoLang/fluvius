@@ -50,7 +50,7 @@
     <span class="badge">Tokio async</span>
     <span class="badge">AGPL-3.0</span>
     <span class="badge">4 crates</span>
-    <span class="badge">59 tests</span>
+    <span class="badge">89 tests</span>
     <span class="badge">Linux / macOS / Windows</span>
   </div>
 </header>
@@ -211,8 +211,8 @@
     <p>Declare pipelines without writing code.</p>
     <ul>
       <li>Sources: WebSocket, File, Kafka, MQTT</li>
-      <li>Sinks: File, Kafka, MQTT, stdout</li>
-      <li>Operators: filter, geofence, CEP, spatial_agg</li>
+      <li>Sinks: WebSocket, File, Kafka, MQTT, stdout</li>
+      <li>Operators: filter, geofence, proximity, rate_limit, spatial_agg, CEP</li>
       <li>Checkpoint + replay configuration</li>
     </ul>
   </div>
@@ -270,8 +270,8 @@ cd fluvius &amp;&amp; cargo build --release
 fluvius run --topology pipeline.toml
 
 # Or use individual commands
-fluvius geofence --input events.jsonl --zone "warehouse:10.0,20.0,0.01"
-fluvius proximity --input events.jsonl --radius 100.0
+fluvius geofence --input events.jsonl --bounds "10.0,20.0,10.5,20.5" --zone-name warehouse
+fluvius proximity --input events.jsonl --threshold 100.0
 fluvius trajectory --input events.jsonl
     </pre>
   </div>
