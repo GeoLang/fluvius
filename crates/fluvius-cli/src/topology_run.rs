@@ -1,18 +1,56 @@
 //! Run a pipeline declared in a TOML topology, wiring configured sources and sinks
 //! to the connector implementations. Kafka and MQTT are feature-gated; a topology
 //! that references them while the feature is compiled out fails with a clear error.
+//!
+//! Both `fluvius run --topology` and `fluvius serve` come through here; serve only
+//! swaps the source and sink for its websocket binds.
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use fluvius_connectors::file;
+use fluvius_core::cep::{CepEngine, Pattern, PatternStep};
 use fluvius_core::event::{Event, OutputEvent};
-use fluvius_core::operator::{FilterOperator, MapOperator};
-use fluvius_core::pipeline::Pipeline;
-use fluvius_core::topology::{OperatorConfig, SinkConfig, SourceConfig, TopologyConfig};
+use fluvius_core::operator::FilterOperator;
+use fluvius_core::pipeline::{Pipeline, Stage};
+use fluvius_core::topology::{
+    OperatorConfig, PatternConfig, SinkConfig, SourceConfig, TopologyConfig, ZoneConfig,
+};
+use fluvius_geo::geofence::{GeofenceOperator, GeofenceZone};
+use fluvius_geo::proximity::ProximityOperator;
+use fluvius_geo::spatial_agg::{AggregateFunction, GridConfig, SpatialAggregator};
+use fluvius_geo::trajectory::TrajectoryOperator;
+use geo::{Coord, LineString, Polygon};
 use tokio::sync::mpsc;
 
 const CHANNEL_CAPACITY: usize = 10_000;
+
+/// Run a topology against live websocket endpoints. Whatever source and sink the
+/// topology declares are replaced by the given binds, everything else is honoured.
+pub async fn serve(
+    mut config: TopologyConfig,
+    source_bind: &str,
+    sink_bind: &str,
+) -> Result<(), String> {
+    if config.pipeline.source.is_some() || config.pipeline.sink.is_some() {
+        eprintln!("serve: ignoring the topology source/sink, using the websocket binds");
+    }
+    config.pipeline.source = Some(SourceConfig::WebSocket {
+        url: source_bind.to_string(),
+    });
+    config.pipeline.sink = Some(SinkConfig::WebSocket {
+        url: sink_bind.to_string(),
+    });
+
+    println!("Starting Fluvius stream processor");
+    println!("  Pipeline: {}", config.pipeline.name);
+    println!("  Operators: {}", config.pipeline.operators.len());
+    println!("  Source WebSocket: ws://{source_bind}");
+    println!("  Sink WebSocket: ws://{sink_bind}");
+
+    run_topology(config).await
+}
 
 /// Run a topology to completion.
 pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
@@ -26,7 +64,7 @@ pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
 
     let mut pipeline = Pipeline::new(pipeline_cfg.name);
     for op in &pipeline_cfg.operators {
-        pipeline.add_operator(build_operator(op)?);
+        pipeline.add_stage(build_stage(op)?);
     }
 
     let rx_in = resolve_source(&source_cfg)?;
@@ -45,30 +83,105 @@ pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Build a pipeline operator from its config. Only stateless (MapOperator) types
-/// are supported by the topology runner; stateful geo operators are not chainable here.
-fn build_operator(config: &OperatorConfig) -> Result<Arc<dyn MapOperator>, String> {
+/// Build a pipeline stage from its config.
+fn build_stage(config: &OperatorConfig) -> Result<Stage, String> {
     match config {
         OperatorConfig::Filter { name, condition } => {
             let predicate = compile_condition(condition)?;
-            Ok(Arc::new(FilterOperator::new(name.clone(), predicate)))
+            Ok(Stage::Map(Arc::new(FilterOperator::new(
+                name.clone(),
+                predicate,
+            ))))
         }
-        other => Err(format!(
-            "topology operator '{}' is not supported by the run command yet",
-            operator_kind(other)
-        )),
+        OperatorConfig::Geofence { name, zones } => {
+            let mut op = GeofenceOperator::new(name.clone());
+            for zone in zones {
+                op.add_zone(GeofenceZone {
+                    name: zone.name.clone(),
+                    polygon: zone_polygon(zone),
+                });
+            }
+            Ok(Stage::Stateful(Box::new(op)))
+        }
+        OperatorConfig::Proximity { name, radius_m } => Ok(Stage::Stateful(Box::new(
+            ProximityOperator::new(name.clone(), *radius_m),
+        ))),
+        OperatorConfig::Trajectory {
+            name,
+            max_speed_mps,
+            max_buffer,
+        } => Ok(Stage::Stateful(Box::new(TrajectoryOperator::new(
+            name.clone(),
+            *max_buffer,
+            *max_speed_mps,
+        )))),
+        OperatorConfig::SpatialAgg {
+            name,
+            cell_size_deg,
+            function,
+            threshold,
+        } => Ok(Stage::Stateful(Box::new(SpatialAggregator::new(
+            name.clone(),
+            GridConfig::uniform(*cell_size_deg),
+            parse_aggregate(function)?,
+            None,
+            *threshold,
+        )))),
+        // the engine names its outputs after the matched pattern, so the operator
+        // name in the config has nothing to attach to
+        OperatorConfig::Cep { name: _, pattern } => {
+            let mut engine = CepEngine::new();
+            engine.add_pattern(build_pattern(pattern)?);
+            Ok(Stage::Stateful(Box::new(engine)))
+        }
+        OperatorConfig::RateLimit { .. } => {
+            Err("topology operator 'rate_limit' is not implemented yet".to_string())
+        }
     }
 }
 
-fn operator_kind(config: &OperatorConfig) -> &'static str {
-    match config {
-        OperatorConfig::Filter { .. } => "filter",
-        OperatorConfig::Geofence { .. } => "geofence",
-        OperatorConfig::Proximity { .. } => "proximity",
-        OperatorConfig::RateLimit { .. } => "rate_limit",
-        OperatorConfig::SpatialAgg { .. } => "spatial_agg",
-        OperatorConfig::Cep { .. } => "cep",
+/// Approximate a configured zone as a polygon. Radius is in degrees, so the shape
+/// is a circle in lon/lat space, not on the ground.
+fn zone_polygon(zone: &ZoneConfig) -> Polygon<f64> {
+    const SEGMENTS: usize = 64;
+    let [lon, lat] = zone.center;
+    let ring: Vec<Coord<f64>> = (0..=SEGMENTS)
+        .map(|i| {
+            let theta = std::f64::consts::TAU * i as f64 / SEGMENTS as f64;
+            Coord {
+                x: lon + zone.radius * theta.cos(),
+                y: lat + zone.radius * theta.sin(),
+            }
+        })
+        .collect();
+    Polygon::new(LineString::from(ring), vec![])
+}
+
+fn parse_aggregate(function: &str) -> Result<AggregateFunction, String> {
+    match function.to_ascii_lowercase().as_str() {
+        "count" => Ok(AggregateFunction::Count),
+        "sum" => Ok(AggregateFunction::Sum),
+        "mean" => Ok(AggregateFunction::Mean),
+        "max" => Ok(AggregateFunction::Max),
+        "min" => Ok(AggregateFunction::Min),
+        other => Err(format!("unsupported spatial_agg function: {other:?}")),
     }
+}
+
+fn build_pattern(config: &PatternConfig) -> Result<Pattern, String> {
+    let mut steps = Vec::new();
+    for step in &config.steps {
+        steps.push(PatternStep {
+            name: step.name.clone(),
+            condition: compile_condition(&step.condition)?,
+            near: step.near.map(|[lon, lat, radius]| (lon, lat, radius)),
+        });
+    }
+    Ok(Pattern {
+        name: config.name.clone(),
+        steps,
+        within: Duration::from_secs(config.within_secs),
+    })
 }
 
 /// Compile a simple filter condition into a predicate.
@@ -296,7 +409,7 @@ fn ws_bind(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluvius_core::topology::parse_topology;
+    use fluvius_core::topology::{PatternStepConfig, parse_topology};
 
     fn kafka_mqtt_toml() -> &'static str {
         r#"
@@ -336,20 +449,137 @@ topic = "alerts/geofence"
             name: "moving".into(),
             condition: "speed > 5.0".into(),
         };
-        assert!(build_operator(&op).is_ok());
+        assert!(matches!(build_stage(&op), Ok(Stage::Map(_))));
     }
 
     #[test]
-    fn test_build_unsupported_operator_errors() {
-        let op = OperatorConfig::Proximity {
-            name: "near".into(),
-            radius_m: 100.0,
+    fn test_build_spatial_operators() {
+        let stages = [
+            OperatorConfig::Geofence {
+                name: "depot".into(),
+                zones: vec![ZoneConfig {
+                    name: "depot".into(),
+                    center: [10.0, 20.0],
+                    radius: 0.01,
+                }],
+            },
+            OperatorConfig::Proximity {
+                name: "near".into(),
+                radius_m: 100.0,
+            },
+            OperatorConfig::Trajectory {
+                name: "tracks".into(),
+                max_speed_mps: 50.0,
+                max_buffer: 100,
+            },
+            OperatorConfig::SpatialAgg {
+                name: "density".into(),
+                cell_size_deg: 0.1,
+                function: "count".into(),
+                threshold: 10,
+            },
+        ];
+        for cfg in &stages {
+            assert!(
+                matches!(build_stage(cfg), Ok(Stage::Stateful(_))),
+                "{cfg:?} should build a stateful stage"
+            );
+        }
+    }
+
+    #[test]
+    fn test_geofence_stage_alerts_on_entry() {
+        let cfg = OperatorConfig::Geofence {
+            name: "depot".into(),
+            zones: vec![ZoneConfig {
+                name: "depot".into(),
+                center: [10.0, 20.0],
+                radius: 0.01,
+            }],
         };
-        let err = match build_operator(&op) {
-            Err(e) => e,
-            Ok(_) => panic!("expected an error for proximity"),
+        let Ok(Stage::Stateful(mut op)) = build_stage(&cfg) else {
+            panic!("expected a stateful geofence stage");
         };
-        assert!(err.contains("proximity"));
+
+        assert!(op.process(&Event::now("truck", 11.0, 21.0)).is_empty());
+        let alerts = op.process(&Event::now("truck", 10.0, 20.0));
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].payload["event"], "Enter");
+        assert_eq!(alerts[0].payload["zone"], "depot");
+    }
+
+    #[test]
+    fn test_spatial_agg_stage_emits_at_threshold() {
+        let cfg = OperatorConfig::SpatialAgg {
+            name: "density".into(),
+            cell_size_deg: 0.1,
+            function: "count".into(),
+            threshold: 2,
+        };
+        let Ok(Stage::Stateful(mut op)) = build_stage(&cfg) else {
+            panic!("expected a stateful spatial_agg stage");
+        };
+
+        assert!(op.process(&Event::now("v1", 10.0, 20.0)).is_empty());
+        let cells = op.process(&Event::now("v2", 10.01, 20.01));
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].payload["count"], 2);
+    }
+
+    #[test]
+    fn test_build_cep_stage() {
+        let cfg = OperatorConfig::Cep {
+            name: "stop-start".into(),
+            pattern: PatternConfig {
+                name: "stop_then_move".into(),
+                within_secs: 60,
+                steps: vec![
+                    PatternStepConfig {
+                        name: "stop".into(),
+                        condition: "speed < 1.0".into(),
+                        near: None,
+                    },
+                    PatternStepConfig {
+                        name: "move".into(),
+                        condition: "speed > 5.0".into(),
+                        near: None,
+                    },
+                ],
+            },
+        };
+        let Ok(Stage::Stateful(mut op)) = build_stage(&cfg) else {
+            panic!("expected a stateful cep stage");
+        };
+
+        assert!(
+            op.process(&Event::now("v1", 0.0, 0.0).with_speed(0.0))
+                .is_empty()
+        );
+        let matches = op.process(&Event::now("v1", 0.0, 0.0).with_speed(10.0));
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].payload["pattern"], "stop_then_move");
+    }
+
+    #[test]
+    fn test_build_rejects_bad_configs() {
+        let rate_limit = OperatorConfig::RateLimit {
+            name: "cap".into(),
+            max_per_second: 10.0,
+        };
+        assert!(
+            build_stage(&rate_limit)
+                .err()
+                .unwrap()
+                .contains("rate_limit")
+        );
+
+        let bad_agg = OperatorConfig::SpatialAgg {
+            name: "density".into(),
+            cell_size_deg: 0.1,
+            function: "median".into(),
+            threshold: 10,
+        };
+        assert!(build_stage(&bad_agg).err().unwrap().contains("median"));
     }
 
     #[test]

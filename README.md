@@ -57,8 +57,8 @@ fluvius geofence --input events.jsonl --bounds "10.0,20.0,10.5,20.5" --zone-name
 fluvius proximity --input events.jsonl --threshold 100.0
 fluvius trajectory --input events.jsonl --max-speed 50.0
 
-# Live WebSocket processing
-fluvius serve --source-bind 127.0.0.1:9001 --sink-bind 127.0.0.1:9002
+# Apply a topology to live WebSocket traffic
+fluvius serve --topology pipeline.toml --source-bind 127.0.0.1:9001 --sink-bind 127.0.0.1:9002
 ```
 
 ## Example Topology
@@ -68,9 +68,20 @@ fluvius serve --source-bind 127.0.0.1:9001 --sink-bind 127.0.0.1:9002
 name = "fleet-monitoring"
 
 [[pipeline.operators]]
+type = "filter"
+name = "moving"
+condition = "speed > 1.0"
+
+# radius is in degrees, not meters
+[[pipeline.operators]]
 type = "geofence"
 name = "depot-zone"
 zones = [{ name = "depot", center = [10.0, 20.0], radius = 0.01 }]
+
+[[pipeline.operators]]
+type = "trajectory"
+name = "tracks"
+max_speed_mps = 50.0
 
 [[pipeline.operators]]
 type = "spatial_agg"
@@ -100,7 +111,21 @@ interval_secs = 30
 max_retained = 5
 ```
 
-`run --topology` wires the configured source and sink (file, websocket, kafka, mqtt) and applies `filter` operators. Stateful geo operators (geofence, proximity, trajectory) run via their own subcommands.
+`run --topology` wires the configured source and sink (file, websocket, kafka, mqtt) and chains the declared operators: `filter`, `geofence`, `proximity`, `trajectory`, `spatial_agg`, `cep`. `rate_limit` parses but is not runnable yet.
+
+`[pipeline.metrics]`, `[pipeline.checkpoint]` and `[pipeline.replay]` parse, but the runner does not act on them yet: those modules are library APIs for now.
+
+A `filter` drops the events it rejects, so nothing downstream sees them. The stateful operators emit their alerts and pass the event on, they never drop it. When the stream ends they are flushed, which is when `trajectory` emits its per-entity summary.
+
+`serve` runs the same wiring against live WebSocket endpoints, replacing whatever source and sink the topology declares:
+
+```bash
+fluvius serve --topology pipeline.toml
+```
+
+Send events to the source socket as JSON, one per WebSocket message, and every alert the pipeline produces is broadcast to the clients connected to the sink socket. Only clients connected at the time receive an alert, nothing is buffered.
+
+The `geofence`, `proximity` and `trajectory` subcommands run a single operator over a file, without a topology.
 
 ## Architecture
 

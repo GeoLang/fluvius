@@ -422,14 +422,17 @@ dependencies = [
 name = "fluvius-cli"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "fluvius-connectors",
  "fluvius-core",
  "fluvius-geo",
+ "futures",
  "geo",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

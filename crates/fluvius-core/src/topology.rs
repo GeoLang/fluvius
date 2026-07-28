@@ -63,6 +63,14 @@ pub enum OperatorConfig {
     },
     #[serde(rename = "proximity")]
     Proximity { name: String, radius_m: f64 },
+    #[serde(rename = "trajectory")]
+    Trajectory {
+        name: String,
+        /// Speed above which an anomaly alert is emitted, in m/s.
+        max_speed_mps: f64,
+        #[serde(default = "default_max_buffer")]
+        max_buffer: usize,
+    },
     #[serde(rename = "rate_limit")]
     RateLimit { name: String, max_per_second: f64 },
     #[serde(rename = "spatial_agg")]
@@ -77,6 +85,10 @@ pub enum OperatorConfig {
         name: String,
         pattern: PatternConfig,
     },
+}
+
+fn default_max_buffer() -> usize {
+    1000
 }
 
 /// Zone configuration for geofence.
@@ -246,6 +258,30 @@ path = "output.jsonl"
         assert_eq!(config.pipeline.operators.len(), 1);
         assert!(config.pipeline.source.is_some());
         assert!(config.pipeline.sink.is_some());
+    }
+
+    #[test]
+    fn test_parse_trajectory_operator() {
+        let toml = r#"
+[pipeline]
+name = "tracks"
+
+[[pipeline.operators]]
+type = "trajectory"
+name = "tracks"
+max_speed_mps = 50.0
+"#;
+        let config = parse_topology(toml).unwrap();
+        let OperatorConfig::Trajectory {
+            max_speed_mps,
+            max_buffer,
+            ..
+        } = &config.pipeline.operators[0]
+        else {
+            panic!("expected a trajectory operator");
+        };
+        assert!((max_speed_mps - 50.0).abs() < 1e-10);
+        assert_eq!(*max_buffer, 1000);
     }
 
     #[test]

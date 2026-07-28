@@ -1,16 +1,15 @@
 //! Fluvius CLI — real-time geospatial stream processor.
 
-mod topology_run;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use fluvius_cli::topology_run;
 use fluvius_connectors::file;
 use fluvius_core::event::Event;
 use fluvius_core::operator::FilterOperator;
 use fluvius_core::pipeline::Pipeline;
-use fluvius_core::topology::load_topology;
+use fluvius_core::topology::{TopologyConfig, load_topology};
 use fluvius_geo::geofence::{GeofenceOperator, GeofenceZone};
 use fluvius_geo::proximity::ProximityOperator;
 use fluvius_geo::trajectory::TrajectoryOperator;
@@ -40,8 +39,11 @@ enum Command {
         #[arg(long)]
         topology: Option<PathBuf>,
     },
-    /// Start WebSocket server for live event processing
+    /// Apply a TOML topology to live events over WebSocket
     Serve {
+        /// Topology file declaring the operator chain
+        #[arg(long)]
+        topology: PathBuf,
         /// Bind address for incoming events
         #[arg(long, default_value = "127.0.0.1:9001")]
         source_bind: String,
@@ -93,9 +95,10 @@ async fn main() {
             topology,
         } => cmd_run(input, output, min_speed, topology).await,
         Command::Serve {
+            topology,
             source_bind,
             sink_bind,
-        } => cmd_serve(&source_bind, &sink_bind).await,
+        } => cmd_serve(&topology, &source_bind, &sink_bind).await,
         Command::Geofence {
             input,
             bounds,
@@ -113,10 +116,7 @@ async fn cmd_run(
     topology: Option<PathBuf>,
 ) {
     if let Some(topology_path) = topology {
-        let config = load_topology(&topology_path).unwrap_or_else(|e| {
-            eprintln!("Error loading topology: {e}");
-            std::process::exit(1);
-        });
+        let config = load_config(&topology_path);
         if let Err(e) = topology_run::run_topology(config).await {
             eprintln!("Error running topology: {e}");
             std::process::exit(1);
@@ -130,6 +130,13 @@ async fn cmd_run(
     };
 
     cmd_run_file(&input, &output, min_speed).await;
+}
+
+fn load_config(path: &std::path::Path) -> TopologyConfig {
+    load_topology(path).unwrap_or_else(|e| {
+        eprintln!("Error loading topology: {e}");
+        std::process::exit(1);
+    })
 }
 
 async fn cmd_run_file(input: &std::path::Path, output: &std::path::Path, min_speed: Option<f64>) {
@@ -181,41 +188,11 @@ async fn cmd_run_file(input: &std::path::Path, output: &std::path::Path, min_spe
     println!("  Outputs written: {output_count}");
 }
 
-async fn cmd_serve(source_bind: &str, sink_bind: &str) {
-    println!("Starting Fluvius stream processor");
-    println!("  Source WebSocket: ws://{source_bind}");
-    println!("  Sink WebSocket: ws://{sink_bind}");
-
-    let (tx, mut rx) = mpsc::channel::<Event>(10000);
-    let (out_tx, out_rx) = mpsc::channel(10000);
-
-    let source_bind = source_bind.to_string();
-    let sink_bind = sink_bind.to_string();
-
-    // Start source
-    tokio::spawn(async move {
-        fluvius_connectors::websocket::ws_source(&source_bind, tx)
-            .await
-            .unwrap();
-    });
-
-    // Start sink
-    tokio::spawn(async move {
-        fluvius_connectors::websocket::WsSink::start(&sink_bind, out_rx)
-            .await
-            .unwrap();
-    });
-
-    // Process events (simple pass-through for now)
-    while let Some(event) = rx.recv().await {
-        let output = fluvius_core::event::OutputEvent {
-            source_event: event,
-            operator: "passthrough".into(),
-            payload: serde_json::json!({"action": "forward"}),
-        };
-        if out_tx.send(output).await.is_err() {
-            break;
-        }
+async fn cmd_serve(topology: &std::path::Path, source_bind: &str, sink_bind: &str) {
+    let config = load_config(topology);
+    if let Err(e) = topology_run::serve(config, source_bind, sink_bind).await {
+        eprintln!("Error serving topology: {e}");
+        std::process::exit(1);
     }
 }
 
