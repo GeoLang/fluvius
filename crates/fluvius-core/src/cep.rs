@@ -6,6 +6,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use crate::event::{Event, OutputEvent};
+use crate::operator::StatefulOperator;
 
 /// A condition that an event must satisfy to match a pattern step.
 pub type EventCondition = Box<dyn Fn(&Event) -> bool + Send + Sync>;
@@ -139,6 +140,24 @@ impl CepEngine {
 impl Default for CepEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl StatefulOperator for CepEngine {
+    fn process(&mut self, event: &Event) -> Vec<OutputEvent> {
+        // inherent method, the trait one is what we are defining here
+        CepEngine::process(self, event)
+    }
+
+    /// Drops partial matches: a pattern that spans a window boundary would report
+    /// a bogus duration.
+    fn on_window_close(&mut self) -> Vec<OutputEvent> {
+        self.state.clear();
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "cep"
     }
 }
 

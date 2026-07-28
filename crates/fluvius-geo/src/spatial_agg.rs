@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use fluvius_core::event::{Event, OutputEvent};
+use fluvius_core::operator::StatefulOperator;
 
 /// A grid cell identifier.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -173,6 +174,24 @@ impl SpatialAggregator {
     /// Reset all cells.
     pub fn reset(&mut self) {
         self.cells.clear();
+    }
+}
+
+impl StatefulOperator for SpatialAggregator {
+    fn process(&mut self, event: &Event) -> Vec<OutputEvent> {
+        // inherent method, the trait one is what we are defining here
+        SpatialAggregator::process(self, event)
+            .into_iter()
+            .collect()
+    }
+
+    fn on_window_close(&mut self) -> Vec<OutputEvent> {
+        self.reset();
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        &self.name
     }
 }
 
