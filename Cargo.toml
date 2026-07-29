@@ -8,4 +8,4 @@ edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/GeoLang/fluvius"
 authors = ["GeoLang <tiletopia@proton.me>"]
-description = "Hydrological network analysis and watershed delineation"
+description = "Real-time geospatial stream processor with geofencing, proximity, and trajectory operators"

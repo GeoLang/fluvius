@@ -119,4 +119,93 @@ mod tests {
         let out = op.process(&e2);
         assert!(out.is_empty());
     }
+
+    /// Measure the pair distance once, then use it as the threshold: the check is
+    /// inclusive, and a hair under it goes quiet.
+    #[test]
+    fn test_threshold_is_inclusive() {
+        let (a, b) = (Event::now("v1", 0.0, 0.0), Event::now("v2", 0.001, 0.0));
+
+        let mut measure = ProximityOperator::new("proximity", 1e9);
+        measure.process(&a);
+        let distance = measure.process(&b)[0].payload["distance_meters"]
+            .as_f64()
+            .unwrap();
+        assert!(distance > 100.0, "sanity: {distance}");
+
+        let mut at_threshold = ProximityOperator::new("proximity", distance);
+        at_threshold.process(&a);
+        assert_eq!(
+            at_threshold.process(&b).len(),
+            1,
+            "equal to the threshold alerts"
+        );
+
+        let mut under = ProximityOperator::new("proximity", distance * 0.999);
+        under.process(&a);
+        assert!(under.process(&b).is_empty(), "just past the threshold");
+    }
+
+    /// An event near several entities alerts once per neighbour.
+    #[test]
+    fn test_alert_per_nearby_entity() {
+        let mut op = ProximityOperator::new("proximity", 1000.0);
+        op.process(&Event::now("v1", 0.0, 0.0));
+        op.process(&Event::now("v2", 0.001, 0.0));
+        // far away, must not be counted
+        op.process(&Event::now("far", 40.0, 40.0));
+
+        let out = op.process(&Event::now("v3", 0.0, 0.001));
+        assert_eq!(out.len(), 2);
+
+        let mut others: Vec<&str> = out
+            .iter()
+            .map(|o| o.payload["entity_b"].as_str().unwrap())
+            .collect();
+        others.sort();
+        assert_eq!(others, vec!["v1", "v2"]);
+        assert!(out.iter().all(|o| o.payload["entity_a"] == "v3"));
+    }
+
+    /// Only the latest position counts: once an entity drives off, arriving at its
+    /// old spot is not an alert.
+    #[test]
+    fn test_uses_latest_position_only() {
+        let mut op = ProximityOperator::new("proximity", 500.0);
+        op.process(&Event::now("v1", 0.0, 0.0));
+        // v1 moves far away
+        op.process(&Event::now("v1", 40.0, 40.0));
+
+        // v2 arrives where v1 used to be
+        assert!(op.process(&Event::now("v2", 0.0, 0.0)).is_empty());
+    }
+
+    #[test]
+    fn test_window_close_clears_positions() {
+        let mut op = ProximityOperator::new("proximity", 1000.0);
+        op.process(&Event::now("v1", 0.0, 0.0));
+
+        assert!(op.on_window_close().is_empty(), "close emits nothing");
+
+        // v1's position was dropped, so v2 has nothing to be near
+        assert!(op.process(&Event::now("v2", 0.001, 0.0)).is_empty());
+        // but v2 is now tracked, so v3 alongside it does alert
+        assert_eq!(op.process(&Event::now("v3", 0.001, 0.0)).len(), 1);
+    }
+
+    #[test]
+    fn test_alert_payload_reports_distance_and_threshold() {
+        let mut op = ProximityOperator::new("proximity", 1000.0);
+        op.process(&Event::now("v1", 0.0, 0.0));
+        let out = op.process(&Event::now("v2", 0.001, 0.0));
+
+        let payload = &out[0].payload;
+        assert_eq!(payload["alert"], "proximity");
+        assert_eq!(payload["threshold_meters"], 1000.0);
+        let distance = payload["distance_meters"].as_f64().unwrap();
+        // 0.001 degrees of longitude at the equator is about 111m
+        assert!((distance - 111.0).abs() < 2.0, "distance was {distance}");
+        assert_eq!(out[0].source_event.entity_id, "v2");
+        assert_eq!(out[0].operator, "proximity");
+    }
 }

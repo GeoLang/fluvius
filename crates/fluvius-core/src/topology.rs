@@ -345,4 +345,225 @@ speed = 10.0
         assert!(config.pipeline.replay.is_some());
         assert_eq!(config.pipeline.metrics.port, 9090);
     }
+
+    /// A pipeline is legal with no operators and no endpoints; the runner is what
+    /// insists on a source and a sink.
+    #[test]
+    fn test_parse_minimal_pipeline() {
+        let config = parse_topology("[pipeline]\nname = \"bare\"\n").unwrap();
+        assert!(config.pipeline.operators.is_empty());
+        assert!(config.pipeline.source.is_none());
+        assert!(config.pipeline.sink.is_none());
+        assert!(config.pipeline.checkpoint.is_none());
+        // metrics defaults apply even when the section is absent
+        assert!(config.pipeline.metrics.enabled);
+        assert_eq!(config.pipeline.metrics.port, 9090);
+        assert_eq!(config.pipeline.metrics.path, "/metrics");
+    }
+
+    #[test]
+    fn test_parse_rejects_unknown_operator_type() {
+        let err = parse_topology(
+            r#"
+[pipeline]
+name = "p"
+
+[[pipeline.operators]]
+type = "teleport"
+name = "nope"
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("teleport"), "{err}");
+    }
+
+    #[test]
+    fn test_parse_rejects_operator_missing_required_field() {
+        // geofence without zones
+        let err = parse_topology(
+            r#"
+[pipeline]
+name = "p"
+
+[[pipeline.operators]]
+type = "geofence"
+name = "depot"
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("zones"), "{err}");
+    }
+
+    #[test]
+    fn test_parse_rejects_zone_with_wrong_center_arity() {
+        let err = parse_topology(
+            r#"
+[pipeline]
+name = "p"
+
+[[pipeline.operators]]
+type = "geofence"
+name = "depot"
+zones = [{ name = "depot", center = [10.0], radius = 0.01 }]
+"#,
+        )
+        .unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn test_parse_rejects_unknown_source_type() {
+        let err = parse_topology(
+            r#"
+[pipeline]
+name = "p"
+
+[pipeline.source]
+type = "carrier-pigeon"
+url = "nowhere"
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("carrier-pigeon"), "{err}");
+    }
+
+    #[test]
+    fn test_parse_rejects_source_missing_field() {
+        let err = parse_topology(
+            r#"
+[pipeline]
+name = "p"
+
+[pipeline.source]
+type = "kafka"
+topic = "gps"
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("brokers"), "{err}");
+    }
+
+    #[test]
+    fn test_parse_rejects_malformed_toml() {
+        assert!(parse_topology("[pipeline\nname = ").is_err());
+        assert!(parse_topology("this is not toml at all {{{").is_err());
+    }
+
+    #[test]
+    fn test_parse_rejects_missing_pipeline_section() {
+        let err = parse_topology("[something_else]\nname = \"p\"\n").unwrap_err();
+        assert!(err.to_string().contains("pipeline"), "{err}");
+    }
+
+    #[test]
+    fn test_parse_rejects_wrong_field_type() {
+        let err = parse_topology(
+            r#"
+[pipeline]
+name = "p"
+
+[[pipeline.operators]]
+type = "proximity"
+name = "near"
+radius_m = "one hundred"
+"#,
+        )
+        .unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn test_stdout_sink_needs_no_fields() {
+        let config = parse_topology(
+            r#"
+[pipeline]
+name = "p"
+
+[pipeline.sink]
+type = "stdout"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(config.pipeline.sink, Some(SinkConfig::Stdout)));
+    }
+
+    #[test]
+    fn test_checkpoint_and_replay_defaults() {
+        let config = parse_topology(
+            r#"
+[pipeline]
+name = "p"
+
+[pipeline.checkpoint]
+dir = "/var/lib/fluvius"
+
+[pipeline.replay]
+file = "history.jsonl"
+"#,
+        )
+        .unwrap();
+        let checkpoint = config.pipeline.checkpoint.unwrap();
+        assert_eq!(checkpoint.interval_secs, 60);
+        assert_eq!(checkpoint.max_retained, 5);
+        let replay = config.pipeline.replay.unwrap();
+        assert!((replay.speed - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_load_topology_reads_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipeline.toml");
+        std::fs::write(&path, "[pipeline]\nname = \"from-disk\"\n").unwrap();
+
+        let config = load_topology(&path).unwrap();
+        assert_eq!(config.pipeline.name, "from-disk");
+    }
+
+    #[test]
+    fn test_load_topology_missing_file_is_io_error() {
+        let err = load_topology(std::path::Path::new("no/such/pipeline.toml")).unwrap_err();
+        assert!(matches!(err, TopologyError::Io(_)), "{err:?}");
+    }
+
+    #[test]
+    fn test_load_topology_bad_content_is_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.toml");
+        std::fs::write(&path, "[pipeline\n").unwrap();
+
+        let err = load_topology(&path).unwrap_err();
+        assert!(matches!(err, TopologyError::Parse(_)), "{err:?}");
+    }
+
+    /// A parsed topology round-trips, so a config can be re-serialized without loss.
+    #[test]
+    fn test_topology_roundtrips_through_toml() {
+        let original = parse_topology(
+            r#"
+[pipeline]
+name = "roundtrip"
+
+[[pipeline.operators]]
+type = "proximity"
+name = "near"
+radius_m = 250.0
+
+[pipeline.source]
+type = "file"
+path = "in.jsonl"
+
+[pipeline.sink]
+type = "stdout"
+"#,
+        )
+        .unwrap();
+
+        let reparsed = parse_topology(&toml::to_string(&original).unwrap()).unwrap();
+        assert_eq!(reparsed.pipeline.name, "roundtrip");
+        let OperatorConfig::Proximity { name, radius_m } = &reparsed.pipeline.operators[0] else {
+            panic!("expected proximity");
+        };
+        assert_eq!(name, "near");
+        assert!((radius_m - 250.0).abs() < 1e-10);
+    }
 }

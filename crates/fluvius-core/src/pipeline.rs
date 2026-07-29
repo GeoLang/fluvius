@@ -260,4 +260,132 @@ mod tests {
         // still saw both events
         assert_eq!(counted, 2);
     }
+
+    /// A pipeline with no stages consumes its input and emits nothing.
+    #[tokio::test]
+    async fn test_empty_pipeline_emits_nothing() {
+        let mut pipeline = Pipeline::new("empty");
+        assert_eq!(pipeline.name(), "empty");
+
+        let (tx_in, rx_in) = mpsc::channel(10);
+        let (tx_out, mut rx_out) = mpsc::channel(10);
+        tx_in.send(Event::now("v1", 0.0, 0.0)).await.unwrap();
+        drop(tx_in);
+
+        let metrics = pipeline.run(rx_in, tx_out).await;
+        assert_eq!(metrics.events_received, 1);
+        assert_eq!(metrics.events_emitted, 0);
+        assert!(rx_out.recv().await.is_none());
+    }
+
+    /// A filter placed after a stateful stage no longer shields it: stage order is
+    /// what decides which events reach the operator.
+    #[tokio::test]
+    async fn test_stage_order_decides_what_the_operator_sees() {
+        let mut pipeline = Pipeline::new("filter_last");
+        pipeline.add_stage(Stage::Stateful(Box::new(Counter { seen: 0 })));
+        pipeline.add_operator(Arc::new(FilterOperator::new("fast_only", |e: &Event| {
+            e.speed.unwrap_or(0.0) > 10.0
+        })));
+
+        let (tx_in, rx_in) = mpsc::channel(10);
+        let (tx_out, mut rx_out) = mpsc::channel(10);
+        for speed in [20.0, 5.0] {
+            tx_in
+                .send(Event::now("v1", 0.0, 0.0).with_speed(speed))
+                .await
+                .unwrap();
+        }
+        drop(tx_in);
+
+        pipeline.run(rx_in, tx_out).await;
+
+        let mut outputs = Vec::new();
+        while let Some(out) = rx_out.recv().await {
+            outputs.push(out);
+        }
+        let total = outputs
+            .iter()
+            .find(|o| o.payload.get("total").is_some())
+            .expect("close summary");
+        assert_eq!(total.payload["total"], 2, "the counter saw the slow event");
+    }
+
+    /// Stateful stages are flushed in order when the stream ends.
+    #[tokio::test]
+    async fn test_close_flushes_every_stateful_stage() {
+        let mut pipeline = Pipeline::new("two_counters");
+        pipeline.add_stage(Stage::Stateful(Box::new(Counter { seen: 0 })));
+        pipeline.add_stage(Stage::Stateful(Box::new(Counter { seen: 0 })));
+
+        let (tx_in, rx_in) = mpsc::channel(10);
+        let (tx_out, mut rx_out) = mpsc::channel(10);
+        tx_in.send(Event::now("v1", 0.0, 0.0)).await.unwrap();
+        drop(tx_in);
+
+        pipeline.run(rx_in, tx_out).await;
+
+        let mut summaries = 0;
+        while let Some(out) = rx_out.recv().await {
+            if out.payload.get("total").is_some() {
+                summaries += 1;
+            }
+        }
+        assert_eq!(summaries, 2);
+    }
+
+    /// If the sink goes away the run stops instead of blocking forever.
+    #[tokio::test]
+    async fn test_run_stops_when_the_sink_is_dropped() {
+        let mut pipeline = Pipeline::new("dead_sink");
+        pipeline.add_operator(Arc::new(FilterOperator::new("pass_all", |_| true)));
+
+        let (tx_in, rx_in) = mpsc::channel(10);
+        let (tx_out, rx_out) = mpsc::channel(10);
+        drop(rx_out);
+
+        for _ in 0..3 {
+            tx_in.send(Event::now("v1", 0.0, 0.0)).await.unwrap();
+        }
+        drop(tx_in);
+
+        let metrics = pipeline.run(rx_in, tx_out).await;
+        assert_eq!(metrics.events_emitted, 0);
+        assert_eq!(metrics.events_received, 1, "gave up on the first send");
+    }
+
+    /// A stateless stage hands the event it emitted to the next stage, so a
+    /// transform is visible downstream.
+    #[tokio::test]
+    async fn test_map_stage_feeds_its_output_downstream() {
+        use crate::operator::TransformOperator;
+
+        let mut pipeline = Pipeline::new("transform_then_filter");
+        pipeline.add_operator(Arc::new(TransformOperator::new("boost", |e: &Event| {
+            let mut cloned = e.clone();
+            cloned.speed = Some(cloned.speed.unwrap_or(0.0) + 100.0);
+            cloned
+        })));
+        pipeline.add_operator(Arc::new(FilterOperator::new("fast_only", |e: &Event| {
+            e.speed.unwrap_or(0.0) > 50.0
+        })));
+
+        let (tx_in, rx_in) = mpsc::channel(10);
+        let (tx_out, mut rx_out) = mpsc::channel(10);
+        tx_in
+            .send(Event::now("v1", 0.0, 0.0).with_speed(1.0))
+            .await
+            .unwrap();
+        drop(tx_in);
+
+        let metrics = pipeline.run(rx_in, tx_out).await;
+        assert_eq!(
+            metrics.events_filtered, 0,
+            "the boost got it past the filter"
+        );
+        assert_eq!(metrics.events_emitted, 2);
+
+        let boosted = rx_out.recv().await.unwrap();
+        assert_eq!(boosted.source_event.speed, Some(101.0));
+    }
 }

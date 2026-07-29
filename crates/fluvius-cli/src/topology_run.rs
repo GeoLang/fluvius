@@ -603,6 +603,147 @@ topic = "alerts/geofence"
     }
 
     #[test]
+    fn test_compile_condition_covers_every_speed_operator() {
+        let cases = [
+            (">", 5.0, false),
+            (">=", 5.0, true),
+            ("<", 5.0, false),
+            ("<=", 5.0, true),
+            ("==", 5.0, true),
+            ("!=", 5.0, false),
+        ];
+        for (op, speed, expected) in cases {
+            let pred = compile_condition(&format!("speed {op} 5.0")).unwrap();
+            assert_eq!(
+                pred(&Event::now("v", 0.0, 0.0).with_speed(speed)),
+                expected,
+                "speed {speed} {op} 5.0"
+            );
+        }
+    }
+
+    /// An event without a speed reading is treated as stopped.
+    #[test]
+    fn test_compile_condition_treats_missing_speed_as_zero() {
+        let pred = compile_condition("speed > 1.0").unwrap();
+        assert!(!pred(&Event::now("v", 0.0, 0.0)));
+
+        let pred = compile_condition("speed < 1.0").unwrap();
+        assert!(pred(&Event::now("v", 0.0, 0.0)));
+    }
+
+    #[test]
+    fn test_compile_condition_entity_id_rejects_ordering_operators() {
+        let err = compile_condition("entity_id > 'truck-1'").err().unwrap();
+        assert!(err.contains("entity_id"), "{err}");
+    }
+
+    #[test]
+    fn test_compile_condition_entity_id_accepts_either_quote_style() {
+        for condition in ["entity_id == 'truck-1'", "entity_id == \"truck-1\""] {
+            let pred = compile_condition(condition).unwrap();
+            assert!(pred(&Event::now("truck-1", 0.0, 0.0)), "{condition}");
+        }
+
+        let pred = compile_condition("entity_id != 'truck-1'").unwrap();
+        assert!(pred(&Event::now("truck-2", 0.0, 0.0)));
+        assert!(!pred(&Event::now("truck-1", 0.0, 0.0)));
+    }
+
+    #[test]
+    fn test_compile_condition_rejects_bad_number() {
+        assert!(compile_condition("speed > fast").is_err());
+    }
+
+    #[test]
+    fn test_zone_polygon_wraps_the_configured_radius() {
+        use geo::Point;
+        use geo::algorithm::contains::Contains;
+
+        let zone = ZoneConfig {
+            name: "depot".into(),
+            center: [10.0, 20.0],
+            radius: 0.01,
+        };
+        let polygon = zone_polygon(&zone);
+
+        assert!(polygon.contains(&Point::new(10.0, 20.0)), "center");
+        assert!(polygon.contains(&Point::new(10.009, 20.0)), "inside radius");
+        assert!(
+            !polygon.contains(&Point::new(10.02, 20.0)),
+            "outside radius"
+        );
+        // the corner of the bounding box is outside the circle
+        assert!(!polygon.contains(&Point::new(10.009, 20.009)));
+    }
+
+    #[test]
+    fn test_parse_aggregate_is_case_insensitive() {
+        for name in ["count", "COUNT", "Sum", "mean", "MAX", "min"] {
+            assert!(parse_aggregate(name).is_ok(), "{name}");
+        }
+        assert!(parse_aggregate("").is_err());
+    }
+
+    #[test]
+    fn test_proximity_stage_alerts_between_entities() {
+        let cfg = OperatorConfig::Proximity {
+            name: "near".into(),
+            radius_m: 1000.0,
+        };
+        let Ok(Stage::Stateful(mut op)) = build_stage(&cfg) else {
+            panic!("expected a stateful proximity stage");
+        };
+
+        assert!(op.process(&Event::now("v1", 0.0, 0.0)).is_empty());
+        let alerts = op.process(&Event::now("v2", 0.001, 0.0));
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].payload["alert"], "proximity");
+        assert_eq!(alerts[0].payload["entity_b"], "v1");
+    }
+
+    #[test]
+    fn test_trajectory_stage_alerts_on_speed_anomaly() {
+        use chrono::{DateTime, Duration as ChronoDuration};
+
+        let cfg = OperatorConfig::Trajectory {
+            name: "tracks".into(),
+            max_speed_mps: 50.0,
+            max_buffer: 100,
+        };
+        let Ok(Stage::Stateful(mut op)) = build_stage(&cfg) else {
+            panic!("expected a stateful trajectory stage");
+        };
+
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        assert!(op.process(&Event::new("v1", 0.0, 0.0, ts)).is_empty());
+        // 0.1 degrees in one second is far above 50 m/s
+        let out = op.process(&Event::new("v1", 0.1, 0.1, ts + ChronoDuration::seconds(1)));
+        assert!(out.iter().any(|o| o.payload["alert"] == "speed_anomaly"));
+
+        let summary = op.on_window_close();
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].payload["type"], "trajectory_summary");
+    }
+
+    #[test]
+    fn test_build_rejects_a_cep_pattern_with_a_bad_condition() {
+        let cfg = OperatorConfig::Cep {
+            name: "bad".into(),
+            pattern: PatternConfig {
+                name: "p".into(),
+                within_secs: 60,
+                steps: vec![PatternStepConfig {
+                    name: "step".into(),
+                    condition: "altitude > 100".into(),
+                    near: None,
+                }],
+            },
+        };
+        assert!(build_stage(&cfg).err().unwrap().contains("altitude"));
+    }
+
+    #[test]
     fn test_ws_bind_strips_scheme_and_path() {
         assert_eq!(ws_bind("ws://localhost:8080/events"), "localhost:8080");
         assert_eq!(ws_bind("127.0.0.1:9001"), "127.0.0.1:9001");
@@ -636,6 +777,49 @@ topic = "alerts/geofence"
                 .unwrap_err()
                 .contains("--features mqtt")
         );
+    }
+
+    #[cfg(not(feature = "kafka"))]
+    #[test]
+    fn test_kafka_sink_requires_feature() {
+        let (_tx, rx) = mpsc::channel(1);
+        let cfg = SinkConfig::Kafka {
+            brokers: vec!["localhost:9092".into()],
+            topic: "t".into(),
+        };
+        assert!(
+            spawn_sink(&cfg, rx)
+                .err()
+                .unwrap()
+                .contains("--features kafka")
+        );
+    }
+
+    #[cfg(not(feature = "mqtt"))]
+    #[test]
+    fn test_mqtt_sink_requires_feature() {
+        let (_tx, rx) = mpsc::channel(1);
+        let cfg = SinkConfig::Mqtt {
+            broker_url: "mqtt://localhost:1883".into(),
+            topic: "t".into(),
+        };
+        assert!(
+            spawn_sink(&cfg, rx)
+                .err()
+                .unwrap()
+                .contains("--features mqtt")
+        );
+    }
+
+    /// The file source reads the events the sink would receive, so a bad path is
+    /// reported by the task rather than crashing the run.
+    #[tokio::test]
+    async fn test_file_source_survives_a_missing_path() {
+        let cfg = SourceConfig::File {
+            path: "no/such/file.jsonl".into(),
+        };
+        let mut rx = resolve_source(&cfg).unwrap();
+        assert!(rx.recv().await.is_none());
     }
 
     // File source and sink run end to end without a broker.

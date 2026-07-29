@@ -89,9 +89,18 @@ impl StatefulOperator for TrajectoryOperator {
             .entry(event.entity_id.clone())
             .or_default();
 
+        let previous = trajectory.last().cloned();
+
+        // Buffer the point first, so the stats below cover the leg that just happened
+        trajectory.push(point);
+        if trajectory.len() > self.max_buffer {
+            trajectory.remove(0);
+        }
+
         // Check for speed anomaly
-        if let Some(last) = trajectory.last() {
-            let computed_speed = Self::compute_speed(last, &point);
+        if let Some(previous) = previous {
+            let current = trajectory.last().expect("just pushed");
+            let computed_speed = Self::compute_speed(&previous, current);
 
             if computed_speed > self.max_speed {
                 outputs.push(OutputEvent {
@@ -114,17 +123,11 @@ impl StatefulOperator for TrajectoryOperator {
                 payload: serde_json::json!({
                     "type": "trajectory_update",
                     "entity_id": event.entity_id,
-                    "point_count": trajectory.len() + 1,
+                    "point_count": trajectory.len(),
                     "total_distance_meters": total_distance,
                     "current_speed_mps": computed_speed,
                 }),
             });
-        }
-
-        // Add point to buffer
-        trajectory.push(point);
-        if trajectory.len() > self.max_buffer {
-            trajectory.remove(0);
         }
 
         outputs
@@ -224,6 +227,232 @@ mod tests {
                 .unwrap()
                 > 0.0
         );
+    }
+
+    /// The running total covers every leg travelled so far, including the one that
+    /// produced this update. It used to lag a leg behind `point_count`.
+    #[test]
+    fn test_update_distance_includes_the_current_leg() {
+        let mut op = TrajectoryOperator::new("traj", 100, 1000.0);
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+
+        let update_at = |op: &mut TrajectoryOperator, i: i64| {
+            let out = op.process(&Event::new(
+                "v1",
+                0.0,
+                i as f64 * 0.01,
+                ts + Duration::seconds(10 * i),
+            ));
+            out.last().map(|o| o.payload.clone())
+        };
+
+        assert!(
+            update_at(&mut op, 0).is_none(),
+            "first point has no leg yet"
+        );
+
+        // each 0.01 degree step north is about 1111.95m
+        let leg = 1111.95;
+        let mut distances = Vec::new();
+        for i in 1..4 {
+            let payload = update_at(&mut op, i).unwrap();
+            assert_eq!(payload["type"], "trajectory_update");
+            assert_eq!(payload["point_count"], i + 1);
+            distances.push(payload["total_distance_meters"].as_f64().unwrap());
+        }
+
+        for (idx, distance) in distances.iter().enumerate() {
+            let expected = leg * (idx + 1) as f64;
+            assert!(
+                (distance - expected).abs() < 1.0,
+                "point {}: distance {distance} should be about {expected}",
+                idx + 2
+            );
+        }
+        // the fourth point sits three legs from the start
+        assert!((distances[2] - 3335.85).abs() < 1.0, "{:?}", distances);
+    }
+
+    /// The update total and the close summary agree on how far an entity went.
+    #[test]
+    fn test_update_and_summary_report_the_same_distance() {
+        let mut op = TrajectoryOperator::new("traj", 100, 1000.0);
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+
+        let mut last_update_distance = 0.0;
+        for i in 0..4 {
+            let out = op.process(&Event::new(
+                "v1",
+                0.0,
+                i as f64 * 0.01,
+                ts + Duration::seconds(10 * i),
+            ));
+            if let Some(update) = out.last() {
+                last_update_distance = update.payload["total_distance_meters"].as_f64().unwrap();
+            }
+        }
+
+        let summary = op.on_window_close().remove(0);
+        let summary_distance = summary.payload["total_distance_meters"].as_f64().unwrap();
+
+        assert_eq!(summary.payload["point_count"], 4);
+        assert!(
+            (last_update_distance - summary_distance).abs() < 1e-9,
+            "update said {last_update_distance}, summary said {summary_distance}"
+        );
+    }
+
+    /// Two readings with the same timestamp must not divide by zero or fire a
+    /// bogus anomaly.
+    #[test]
+    fn test_identical_timestamps_give_zero_speed() {
+        let mut op = TrajectoryOperator::new("traj", 100, 1.0);
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+
+        op.process(&Event::new("v1", 0.0, 0.0, ts));
+        let out = op.process(&Event::new("v1", 0.5, 0.5, ts));
+
+        assert!(
+            !out.iter().any(|o| o.payload["alert"] == "speed_anomaly"),
+            "no anomaly without elapsed time: {out:?}"
+        );
+        let update = out.last().unwrap();
+        assert_eq!(update.payload["type"], "trajectory_update");
+        assert_eq!(update.payload["current_speed_mps"], 0.0);
+    }
+
+    /// An out-of-order reading is reported as zero speed rather than negative.
+    #[test]
+    fn test_backwards_timestamp_gives_zero_speed() {
+        let mut op = TrajectoryOperator::new("traj", 100, 1.0);
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+
+        op.process(&Event::new("v1", 0.0, 0.0, ts));
+        let out = op.process(&Event::new("v1", 0.5, 0.5, ts - Duration::seconds(30)));
+
+        assert!(!out.iter().any(|o| o.payload["alert"] == "speed_anomaly"));
+        assert_eq!(out.last().unwrap().payload["current_speed_mps"], 0.0);
+    }
+
+    #[test]
+    fn test_speed_below_max_raises_no_anomaly() {
+        let mut op = TrajectoryOperator::new("traj", 100, 50.0);
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+
+        op.process(&Event::new("v1", 0.0, 0.0, ts));
+        // ~111m in 10s = ~11 m/s, well under the 50 m/s limit
+        let out = op.process(&Event::new("v1", 0.001, 0.0, ts + Duration::seconds(10)));
+
+        assert_eq!(out.len(), 1, "just the update, no anomaly");
+        assert_eq!(out[0].payload["type"], "trajectory_update");
+    }
+
+    /// The buffer keeps the newest points only, which is what the close summary counts.
+    #[test]
+    fn test_buffer_evicts_oldest_points() {
+        let mut op = TrajectoryOperator::new("traj", 2, 1000.0);
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+
+        for i in 0..5 {
+            op.process(&Event::new(
+                "v1",
+                i as f64 * 0.001,
+                0.0,
+                ts + Duration::seconds(10 * i),
+            ));
+        }
+
+        let summaries = op.on_window_close();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].payload["point_count"], 2);
+    }
+
+    #[test]
+    fn test_single_point_entity_gets_no_summary() {
+        let mut op = TrajectoryOperator::new("traj", 100, 1000.0);
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+
+        op.process(&Event::new("lonely", 0.0, 0.0, ts));
+        op.process(&Event::new("moving", 0.0, 0.0, ts));
+        op.process(&Event::new(
+            "moving",
+            0.001,
+            0.0,
+            ts + Duration::seconds(10),
+        ));
+
+        let summaries = op.on_window_close();
+        assert_eq!(summaries.len(), 1, "one point is not a trajectory");
+        assert_eq!(summaries[0].payload["entity_id"], "moving");
+    }
+
+    #[test]
+    fn test_window_close_clears_state() {
+        let mut op = TrajectoryOperator::new("traj", 100, 1000.0);
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+
+        op.process(&Event::new("v1", 0.0, 0.0, ts));
+        op.process(&Event::new("v1", 0.001, 0.0, ts + Duration::seconds(10)));
+        assert_eq!(op.on_window_close().len(), 1);
+        assert!(op.on_window_close().is_empty(), "state was flushed");
+
+        // the next point starts a fresh trajectory, so it emits no update
+        assert!(
+            op.process(&Event::new("v1", 0.002, 0.0, ts + Duration::seconds(20)))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_summary_average_speed_matches_distance_over_duration() {
+        let mut op = TrajectoryOperator::new("traj", 100, 1000.0);
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+
+        op.process(&Event::new("v1", 0.0, 0.0, ts));
+        op.process(&Event::new("v1", 0.001, 0.0, ts + Duration::seconds(10)));
+        op.process(&Event::new("v1", 0.002, 0.0, ts + Duration::seconds(20)));
+
+        let summary = op.on_window_close().remove(0);
+        let distance = summary.payload["total_distance_meters"].as_f64().unwrap();
+        let duration = summary.payload["duration_seconds"].as_f64().unwrap();
+        let avg = summary.payload["avg_speed_mps"].as_f64().unwrap();
+
+        assert_eq!(duration, 20.0);
+        assert!((distance - 222.0).abs() < 4.0, "distance was {distance}");
+        assert!((avg - distance / duration).abs() < 1e-9);
+    }
+
+    /// Every entity gets its own buffer and its own summary.
+    #[test]
+    fn test_summaries_are_per_entity() {
+        let mut op = TrajectoryOperator::new("traj", 100, 1000.0);
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+
+        for entity in ["a", "b"] {
+            op.process(&Event::new(entity, 0.0, 0.0, ts));
+            op.process(&Event::new(entity, 0.001, 0.0, ts + Duration::seconds(10)));
+        }
+
+        let mut names: Vec<String> = op
+            .on_window_close()
+            .iter()
+            .map(|s| s.payload["entity_id"].as_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_smoothing_needs_a_full_window() {
+        let points: Vec<TrajectoryPoint> = (0..2)
+            .map(|i| TrajectoryPoint {
+                lon: i as f64,
+                lat: 0.0,
+                timestamp: Utc::now(),
+            })
+            .collect();
+        assert!(TrajectoryOperator::smooth_position(&points, 3).is_none());
+        assert!(TrajectoryOperator::smooth_position(&[], 1).is_none());
     }
 
     #[test]

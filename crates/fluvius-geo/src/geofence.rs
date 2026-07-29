@@ -173,4 +173,116 @@ mod tests {
         let out = op.process(&Event::now("v1", 7.0, 7.0));
         assert_eq!(out.len(), 2); // Enter zone_a AND enter zone_b
     }
+
+    /// A point exactly on the edge counts as outside, so a vehicle stopped on the
+    /// boundary never triggers an entry.
+    #[test]
+    fn test_geofence_boundary_point_counts_as_outside() {
+        let mut op = GeofenceOperator::new("geofence");
+        op.add_zone(square_zone("zone_a", 0.0, 0.0, 10.0, 10.0));
+
+        assert!(op.process(&Event::now("v1", 0.0, 5.0)).is_empty(), "edge");
+        assert!(op.process(&Event::now("v1", 0.0, 0.0)).is_empty(), "corner");
+
+        // a hair inside is an entry
+        let out = op.process(&Event::now("v1", 0.000_001, 5.0));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload["event"], "Enter");
+    }
+
+    #[test]
+    fn test_geofence_reentry_emits_enter_again() {
+        let mut op = GeofenceOperator::new("geofence");
+        op.add_zone(square_zone("zone_a", 0.0, 0.0, 10.0, 10.0));
+
+        let path = [
+            (5.0, 5.0, Some("Enter")),
+            (20.0, 20.0, Some("Exit")),
+            (6.0, 6.0, Some("Enter")),
+            (7.0, 7.0, None),
+            (30.0, 30.0, Some("Exit")),
+        ];
+
+        for (lon, lat, expected) in path {
+            let out = op.process(&Event::now("v1", lon, lat));
+            match expected {
+                Some(kind) => {
+                    assert_eq!(out.len(), 1, "at ({lon},{lat})");
+                    assert_eq!(out[0].payload["event"], kind, "at ({lon},{lat})");
+                }
+                None => assert!(out.is_empty(), "at ({lon},{lat}): {out:?}"),
+            }
+        }
+    }
+
+    /// One move that leaves one zone and enters another emits both transitions.
+    #[test]
+    fn test_geofence_move_between_disjoint_zones() {
+        let mut op = GeofenceOperator::new("geofence");
+        op.add_zone(square_zone("zone_a", 0.0, 0.0, 10.0, 10.0));
+        op.add_zone(square_zone("zone_b", 20.0, 20.0, 30.0, 30.0));
+
+        assert_eq!(op.process(&Event::now("v1", 5.0, 5.0)).len(), 1);
+
+        let out = op.process(&Event::now("v1", 25.0, 25.0));
+        assert_eq!(out.len(), 2);
+
+        let mut seen: Vec<(String, String)> = out
+            .iter()
+            .map(|o| {
+                (
+                    o.payload["zone"].as_str().unwrap().to_string(),
+                    o.payload["event"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![
+                ("zone_a".to_string(), "Exit".to_string()),
+                ("zone_b".to_string(), "Enter".to_string()),
+            ]
+        );
+    }
+
+    /// Each entity carries its own zone state: one leaving does not emit for the other.
+    #[test]
+    fn test_geofence_entity_state_is_independent() {
+        let mut op = GeofenceOperator::new("geofence");
+        op.add_zone(square_zone("warehouse", 0.0, 0.0, 10.0, 10.0));
+
+        assert_eq!(op.process(&Event::now("car-1", 5.0, 5.0)).len(), 1);
+        assert_eq!(op.process(&Event::now("car-2", 6.0, 6.0)).len(), 1);
+
+        let out = op.process(&Event::now("car-1", 50.0, 50.0));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload["entity_id"], "car-1");
+        assert_eq!(out[0].payload["event"], "Exit");
+
+        // car-2 never moved, so it stays inside and stays quiet
+        assert!(op.process(&Event::now("car-2", 6.5, 6.5)).is_empty());
+    }
+
+    #[test]
+    fn test_geofence_without_zones_emits_nothing() {
+        let mut op = GeofenceOperator::new("geofence");
+        assert!(op.process(&Event::now("v1", 5.0, 5.0)).is_empty());
+        assert!(op.on_window_close().is_empty());
+    }
+
+    /// Geofence state survives a window close, so an entity already inside does not
+    /// re-enter after a flush.
+    #[test]
+    fn test_geofence_window_close_keeps_membership() {
+        let mut op = GeofenceOperator::new("geofence");
+        op.add_zone(square_zone("zone_a", 0.0, 0.0, 10.0, 10.0));
+
+        assert_eq!(op.process(&Event::now("v1", 5.0, 5.0)).len(), 1);
+        assert!(op.on_window_close().is_empty());
+        assert!(
+            op.process(&Event::now("v1", 6.0, 6.0)).is_empty(),
+            "still inside after the flush"
+        );
+    }
 }
