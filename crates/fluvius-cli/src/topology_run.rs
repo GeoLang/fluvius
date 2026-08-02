@@ -12,10 +12,12 @@ use std::time::Duration;
 use fluvius_connectors::file;
 use fluvius_core::cep::{CepEngine, Pattern, PatternStep};
 use fluvius_core::event::{Event, OutputEvent};
-use fluvius_core::operator::FilterOperator;
+use fluvius_core::operator::{FilterOperator, RateLimitOperator};
 use fluvius_core::pipeline::{Pipeline, Stage};
+use fluvius_core::replay::{ReplaySpeed, Replayer};
 use fluvius_core::topology::{
-    OperatorConfig, PatternConfig, SinkConfig, SourceConfig, TopologyConfig, ZoneConfig,
+    OperatorConfig, PatternConfig, PipelineConfig, ReplayConfig, SinkConfig, SourceConfig,
+    TopologyConfig, ZoneConfig,
 };
 use fluvius_geo::geofence::{GeofenceOperator, GeofenceZone};
 use fluvius_geo::proximity::ProximityOperator;
@@ -55,9 +57,8 @@ pub async fn serve(
 /// Run a topology to completion.
 pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
     let pipeline_cfg = config.pipeline;
-    let source_cfg = pipeline_cfg
-        .source
-        .ok_or_else(|| "topology has no [pipeline.source]".to_string())?;
+    reject_unsupported_sections(&pipeline_cfg)?;
+
     let sink_cfg = pipeline_cfg
         .sink
         .ok_or_else(|| "topology has no [pipeline.sink]".to_string())?;
@@ -67,7 +68,23 @@ pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
         pipeline.add_stage(build_stage(op)?);
     }
 
-    let rx_in = resolve_source(&source_cfg)?;
+    let rx_in = match &pipeline_cfg.replay {
+        Some(replay) => {
+            if pipeline_cfg.source.is_some() {
+                eprintln!(
+                    "replay: ignoring the topology source, replaying {}",
+                    replay.file
+                );
+            }
+            replay_source(replay)?
+        }
+        None => {
+            let source_cfg = pipeline_cfg
+                .source
+                .ok_or_else(|| "topology has no [pipeline.source]".to_string())?;
+            resolve_source(&source_cfg)?
+        }
+    };
     let (tx_out, rx_out) = mpsc::channel(CHANNEL_CAPACITY);
     let sink_handle = spawn_sink(&sink_cfg, rx_out)?;
 
@@ -81,6 +98,49 @@ pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
     println!("  Events emitted: {}", metrics.events_emitted);
     println!("  Events filtered: {}", metrics.events_filtered);
     Ok(())
+}
+
+/// Reject the sections the runner cannot honour. Both parse so a config can carry
+/// them, but serving metrics would need a collector threaded through every stage and
+/// checkpointing would need operator state in a store, neither of which exists.
+fn reject_unsupported_sections(config: &PipelineConfig) -> Result<(), String> {
+    if config.metrics.as_ref().is_some_and(|m| m.enabled) {
+        return Err(
+            "[pipeline.metrics] is configured but not supported: the runner serves no metrics \
+             endpoint, fluvius_core::metrics is a library API. Remove the section or set \
+             enabled = false"
+                .to_string(),
+        );
+    }
+    if config.checkpoint.is_some() {
+        return Err(
+            "[pipeline.checkpoint] is configured but not supported: the runner keeps no state \
+             store to snapshot, fluvius_core::checkpoint is a library API. Remove the section"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Feed the pipeline from a recorded file, paced by the event timestamps.
+fn replay_source(config: &ReplayConfig) -> Result<mpsc::Receiver<Event>, String> {
+    let speed = match config.speed {
+        s if s.is_infinite() && s.is_sign_positive() => ReplaySpeed::MaxSpeed,
+        s if s > 0.0 => ReplaySpeed::Multiplied(s),
+        s => return Err(format!("replay speed must be positive or inf, got {s}")),
+    };
+
+    let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
+    let path = config.file.clone();
+    tokio::spawn(async move {
+        match file::read_jsonl(Path::new(&path)).await {
+            Ok(events) => {
+                Replayer::new(speed).replay(events, tx).await;
+            }
+            Err(e) => eprintln!("replay source error: {e}"),
+        }
+    });
+    Ok(rx)
 }
 
 /// Build a pipeline stage from its config.
@@ -134,8 +194,19 @@ fn build_stage(config: &OperatorConfig) -> Result<Stage, String> {
             engine.add_pattern(build_pattern(pattern)?);
             Ok(Stage::Stateful(Box::new(engine)))
         }
-        OperatorConfig::RateLimit { .. } => {
-            Err("topology operator 'rate_limit' is not implemented yet".to_string())
+        OperatorConfig::RateLimit {
+            name,
+            max_per_second,
+        } => {
+            if !max_per_second.is_finite() || *max_per_second <= 0.0 {
+                return Err(format!(
+                    "rate_limit {name:?} needs a finite max_per_second above zero, got {max_per_second}"
+                ));
+            }
+            Ok(Stage::Map(Arc::new(RateLimitOperator::new(
+                name.clone(),
+                *max_per_second,
+            ))))
         }
     }
 }
@@ -561,18 +632,29 @@ topic = "alerts/geofence"
     }
 
     #[test]
-    fn test_build_rejects_bad_configs() {
-        let rate_limit = OperatorConfig::RateLimit {
+    fn test_build_rate_limit_stage() {
+        let cfg = OperatorConfig::RateLimit {
             name: "cap".into(),
             max_per_second: 10.0,
         };
-        assert!(
-            build_stage(&rate_limit)
-                .err()
-                .unwrap()
-                .contains("rate_limit")
-        );
+        assert!(matches!(build_stage(&cfg), Ok(Stage::Map(_))));
+    }
 
+    /// A rate that cannot throttle anything is a config mistake, not a pass-through.
+    #[test]
+    fn test_build_rejects_a_rate_limit_without_a_usable_rate() {
+        for rate in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            let cfg = OperatorConfig::RateLimit {
+                name: "cap".into(),
+                max_per_second: rate,
+            };
+            let err = build_stage(&cfg).err().unwrap();
+            assert!(err.contains("max_per_second"), "{rate}: {err}");
+        }
+    }
+
+    #[test]
+    fn test_build_rejects_bad_configs() {
         let bad_agg = OperatorConfig::SpatialAgg {
             name: "density".into(),
             cell_size_deg: 0.1,
@@ -741,6 +823,59 @@ topic = "alerts/geofence"
             },
         };
         assert!(build_stage(&cfg).err().unwrap().contains("altitude"));
+    }
+
+    #[test]
+    fn test_reject_unsupported_sections() {
+        let with_metrics = parse_topology(
+            "[pipeline]\nname = \"p\"\n\n[pipeline.metrics]\nenabled = true\nport = 9090\n",
+        )
+        .unwrap()
+        .pipeline;
+        let err = reject_unsupported_sections(&with_metrics).err().unwrap();
+        assert!(
+            err.contains("[pipeline.metrics]") && err.contains("not supported"),
+            "{err}"
+        );
+
+        let with_checkpoint = parse_topology(
+            "[pipeline]\nname = \"p\"\n\n[pipeline.checkpoint]\ndir = \"/tmp/cp\"\n",
+        )
+        .unwrap()
+        .pipeline;
+        let err = reject_unsupported_sections(&with_checkpoint).err().unwrap();
+        assert!(
+            err.contains("[pipeline.checkpoint]") && err.contains("not supported"),
+            "{err}"
+        );
+    }
+
+    /// Metrics turned off explicitly is a statement of intent, not a request for
+    /// something missing.
+    #[test]
+    fn test_disabled_metrics_section_is_accepted() {
+        let disabled =
+            parse_topology("[pipeline]\nname = \"p\"\n\n[pipeline.metrics]\nenabled = false\n")
+                .unwrap()
+                .pipeline;
+        assert!(reject_unsupported_sections(&disabled).is_ok());
+
+        let absent = parse_topology("[pipeline]\nname = \"p\"\n")
+            .unwrap()
+            .pipeline;
+        assert!(reject_unsupported_sections(&absent).is_ok());
+    }
+
+    #[test]
+    fn test_replay_source_rejects_a_bad_speed() {
+        for speed in [0.0, -2.0, f64::NAN, f64::NEG_INFINITY] {
+            let cfg = ReplayConfig {
+                file: "history.jsonl".into(),
+                speed,
+            };
+            let err = replay_source(&cfg).err().unwrap();
+            assert!(err.contains("replay speed"), "{speed}: {err}");
+        }
     }
 
     #[test]

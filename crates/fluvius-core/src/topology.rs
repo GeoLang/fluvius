@@ -40,8 +40,7 @@ pub struct PipelineConfig {
     pub operators: Vec<OperatorConfig>,
     pub source: Option<SourceConfig>,
     pub sink: Option<SinkConfig>,
-    #[serde(default)]
-    pub metrics: MetricsConfig,
+    pub metrics: Option<MetricsConfig>,
     pub checkpoint: Option<CheckpointConfig>,
     pub replay: Option<ReplayConfig>,
 }
@@ -201,6 +200,8 @@ fn default_max_retained() -> usize {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayConfig {
     pub file: String,
+    /// Playback multiplier over the recorded timestamps. `inf` replays as fast as
+    /// the pipeline can take the events.
     #[serde(default = "default_speed")]
     pub speed: f64,
 }
@@ -343,7 +344,7 @@ speed = 10.0
         assert_eq!(config.pipeline.operators.len(), 3);
         assert!(config.pipeline.checkpoint.is_some());
         assert!(config.pipeline.replay.is_some());
-        assert_eq!(config.pipeline.metrics.port, 9090);
+        assert_eq!(config.pipeline.metrics.unwrap().port, 9090);
     }
 
     /// A pipeline is legal with no operators and no endpoints; the runner is what
@@ -355,10 +356,7 @@ speed = 10.0
         assert!(config.pipeline.source.is_none());
         assert!(config.pipeline.sink.is_none());
         assert!(config.pipeline.checkpoint.is_none());
-        // metrics defaults apply even when the section is absent
-        assert!(config.pipeline.metrics.enabled);
-        assert_eq!(config.pipeline.metrics.port, 9090);
-        assert_eq!(config.pipeline.metrics.path, "/metrics");
+        assert!(config.pipeline.metrics.is_none());
     }
 
     #[test]
@@ -488,11 +486,13 @@ type = "stdout"
     }
 
     #[test]
-    fn test_checkpoint_and_replay_defaults() {
+    fn test_section_defaults() {
         let config = parse_topology(
             r#"
 [pipeline]
 name = "p"
+
+[pipeline.metrics]
 
 [pipeline.checkpoint]
 dir = "/var/lib/fluvius"
@@ -502,11 +502,32 @@ file = "history.jsonl"
 "#,
         )
         .unwrap();
+        let metrics = config.pipeline.metrics.unwrap();
+        assert!(metrics.enabled);
+        assert_eq!(metrics.port, 9090);
+        assert_eq!(metrics.path, "/metrics");
         let checkpoint = config.pipeline.checkpoint.unwrap();
         assert_eq!(checkpoint.interval_secs, 60);
         assert_eq!(checkpoint.max_retained, 5);
         let replay = config.pipeline.replay.unwrap();
         assert!((replay.speed - 1.0).abs() < 1e-10);
+    }
+
+    /// `inf` is a legal TOML float and is what selects max-speed replay.
+    #[test]
+    fn test_replay_speed_accepts_infinity() {
+        let config = parse_topology(
+            r#"
+[pipeline]
+name = "p"
+
+[pipeline.replay]
+file = "history.jsonl"
+speed = inf
+"#,
+        )
+        .unwrap();
+        assert!(config.pipeline.replay.unwrap().speed.is_infinite());
     }
 
     #[test]

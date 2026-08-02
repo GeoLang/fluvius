@@ -36,10 +36,10 @@ Zero JVM. Sub-MB footprint. Single binary.
 
 ### Operations
 
-- **Checkpointing** — Periodic state snapshots for crash recovery with automatic GC
-- **Replay mode** — Replay historical data at 1x, 10x, 100x, or max speed
-- **Prometheus metrics** — Built-in `/metrics` endpoint (events received/emitted/filtered/late, processing time)
+- **Replay mode** — Replay historical data at 1x, 10x, 100x, or max speed, from a topology or the library
 - **Topology DSL (TOML)** — Declare full pipelines without writing code
+- **Checkpointing** (library only): `fluvius_core::checkpoint` snapshots a `StateStore` with automatic GC. The topology runner keeps no state store, so it cannot checkpoint a pipeline
+- **Prometheus metrics** (library only): `fluvius_core::metrics` counts events and renders the exposition format. Nothing serves it over HTTP
 
 ## Quick Start
 
@@ -96,26 +96,30 @@ brokers = ["localhost:9092"]
 topic = "gps-events"
 group_id = "fluvius-fleet"
 
+[[pipeline.operators]]
+type = "rate_limit"
+name = "cap"
+max_per_second = 50.0
+
 [pipeline.sink]
 type = "mqtt"
 broker_url = "mqtt://localhost:1883"
 topic = "alerts/geofence"
-
-[pipeline.metrics]
-enabled = true
-port = 9090
-
-[pipeline.checkpoint]
-dir = "/var/lib/fluvius/checkpoints"
-interval_secs = 30
-max_retained = 5
 ```
 
-`run --topology` wires the configured source and sink (file, websocket, kafka, mqtt) and chains the declared operators: `filter`, `geofence`, `proximity`, `trajectory`, `spatial_agg`, `cep`. `rate_limit` parses but is not runnable yet.
+`run --topology` wires the configured source and sink (file, websocket, kafka, mqtt) and chains the declared operators: `filter`, `geofence`, `proximity`, `trajectory`, `spatial_agg`, `cep`, `rate_limit`.
 
-`[pipeline.metrics]`, `[pipeline.checkpoint]` and `[pipeline.replay]` parse, but the runner does not act on them yet: those modules are library APIs for now.
+A `filter` drops the events it rejects, so nothing downstream sees them. `rate_limit` is a token bucket over the whole stream, not per entity: it passes `max_per_second` events, bursting up to one second's worth, and drops the rest. The stateful operators emit their alerts and pass the event on, they never drop it. When the stream ends they are flushed, which is when `trajectory` emits its per-entity summary.
 
-A `filter` drops the events it rejects, so nothing downstream sees them. The stateful operators emit their alerts and pass the event on, they never drop it. When the stream ends they are flushed, which is when `trajectory` emits its per-entity summary.
+`[pipeline.replay]` replaces the source with a recorded JSON lines file, paced by the event timestamps. `speed` is a multiplier over the recording, and `inf` replays as fast as the pipeline accepts events:
+
+```toml
+[pipeline.replay]
+file = "historical.jsonl"
+speed = 10.0
+```
+
+`[pipeline.metrics]` and `[pipeline.checkpoint]` parse, but the runner cannot act on either and fails with an error saying so rather than ignoring the section. Serving metrics needs a collector threaded through every stage, and checkpointing needs the operators to keep their state in a `StateStore`, neither of which exists. Set `enabled = false` to keep a metrics section in a config the runner will accept.
 
 `serve` runs the same wiring against live WebSocket endpoints, replacing whatever source and sink the topology declares:
 
@@ -123,7 +127,7 @@ A `filter` drops the events it rejects, so nothing downstream sees them. The sta
 fluvius serve --topology pipeline.toml
 ```
 
-Send events to the source socket as JSON, one per WebSocket message, and every alert the pipeline produces is broadcast to the clients connected to the sink socket. Only clients connected at the time receive an alert, nothing is buffered.
+Send events to the source socket as JSON, one per WebSocket message, and every alert the pipeline produces is broadcast to the clients connected to the sink socket. Only clients connected at the time receive an alert, nothing is buffered. A `[pipeline.replay]` section still wins over the source, so `serve` then broadcasts a recording instead of listening on the source socket.
 
 The `geofence`, `proximity` and `trajectory` subcommands run a single operator over a file, without a topology.
 
@@ -158,9 +162,11 @@ The `geofence`, `proximity` and `trajectory` subcommands run a single operator o
 | Sub-MB memory | ✓ | ✗ | ✗ | ✗ |
 | TOML topology DSL | ✓ | ✗ | ✗ | ✗ |
 | Map matching | ✓ | ✗ | ✗ | ✗ |
-| Checkpointing | ✓ | ✓ | ✓ | ✓ |
-| Prometheus metrics | ✓ | ✓ | ✓ | ✗ |
+| Checkpointing | lib | ✓ | ✓ | ✓ |
+| Prometheus metrics | lib | ✓ | ✓ | ✗ |
 | Open source | ✓ | ✓ | ✓ | ✗ |
+
+`lib` means the crate ships the API but a running pipeline does not use it.
 
 ## License
 

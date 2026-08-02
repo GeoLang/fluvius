@@ -135,6 +135,66 @@ impl StatefulOperator for RateLimiter {
     }
 }
 
+/// Token bucket throttle: passes at most `max_per_second` events across the whole
+/// stream, bursting up to one second's worth. It is a `MapOperator` so the events it
+/// rejects are dropped and never reach the rest of the chain, unlike `RateLimiter`,
+/// which caps a per-entity count and only withholds its own output.
+pub struct RateLimitOperator {
+    name: String,
+    max_per_second: f64,
+    bucket: std::sync::Mutex<Bucket>,
+}
+
+struct Bucket {
+    tokens: f64,
+    last_refill: std::time::Instant,
+}
+
+impl RateLimitOperator {
+    /// `max_per_second` must be finite and greater than zero.
+    pub fn new(name: impl Into<String>, max_per_second: f64) -> Self {
+        Self {
+            name: name.into(),
+            max_per_second,
+            bucket: std::sync::Mutex::new(Bucket {
+                tokens: burst_capacity(max_per_second),
+                last_refill: std::time::Instant::now(),
+            }),
+        }
+    }
+}
+
+/// A rate below one per second still gets a single token to spend, otherwise it
+/// could never pass anything.
+fn burst_capacity(max_per_second: f64) -> f64 {
+    max_per_second.max(1.0)
+}
+
+impl MapOperator for RateLimitOperator {
+    fn process(&self, event: &Event) -> Option<OutputEvent> {
+        let mut bucket = self.bucket.lock().expect("rate limit bucket poisoned");
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(bucket.last_refill).as_secs_f64();
+        bucket.last_refill = now;
+        bucket.tokens = (bucket.tokens + elapsed * self.max_per_second)
+            .min(burst_capacity(self.max_per_second));
+
+        if bucket.tokens < 1.0 {
+            return None;
+        }
+        bucket.tokens -= 1.0;
+        Some(OutputEvent {
+            source_event: event.clone(),
+            operator: self.name.clone(),
+            payload: serde_json::json!({"action": "pass"}),
+        })
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +240,38 @@ mod tests {
         // After window close, counts reset
         limiter.on_window_close();
         assert_eq!(limiter.process(&e1).len(), 1); // v1 can send again
+    }
+
+    /// The burst is spent across entities, not per entity, and the events it rejects
+    /// produce no output at all.
+    #[test]
+    fn test_rate_limit_operator_spends_its_burst() {
+        let limiter = RateLimitOperator::new("throttle", 2.0);
+
+        assert!(limiter.process(&Event::now("v1", 0.0, 0.0)).is_some());
+        assert!(limiter.process(&Event::now("v2", 0.0, 0.0)).is_some());
+        assert!(limiter.process(&Event::now("v3", 0.0, 0.0)).is_none());
+    }
+
+    /// Below one per second the bucket still holds a single token, so the operator
+    /// is a throttle rather than a mute.
+    #[test]
+    fn test_rate_limit_operator_allows_one_below_a_rate_of_one() {
+        let limiter = RateLimitOperator::new("throttle", 0.1);
+        assert!(limiter.process(&Event::now("v1", 0.0, 0.0)).is_some());
+        assert!(limiter.process(&Event::now("v1", 0.0, 0.0)).is_none());
+    }
+
+    #[test]
+    fn test_rate_limit_operator_refills_over_time() {
+        let limiter = RateLimitOperator::new("throttle", 100.0);
+        for _ in 0..100 {
+            limiter.process(&Event::now("v1", 0.0, 0.0));
+        }
+        assert!(limiter.process(&Event::now("v1", 0.0, 0.0)).is_none());
+
+        // 50ms at 100/s is worth 5 tokens
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(limiter.process(&Event::now("v1", 0.0, 0.0)).is_some());
     }
 }

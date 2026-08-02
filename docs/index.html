@@ -147,8 +147,8 @@
     </ul>
   </div>
   <div class="card">
-    <h3>Checkpointing</h3>
-    <p>Periodic state snapshots for crash recovery.</p>
+    <h3>Checkpointing (library only)</h3>
+    <p>Periodic state snapshots for crash recovery. The topology runner keeps no state store, so it cannot checkpoint a pipeline.</p>
     <ul>
       <li>Configurable checkpoint interval</li>
       <li>Automatic garbage collection</li>
@@ -177,13 +177,13 @@
     </ul>
   </div>
   <div class="card">
-    <h3>Prometheus Metrics</h3>
-    <p>Built-in observability in exposition format.</p>
+    <h3>Prometheus Metrics (library only)</h3>
+    <p>Observability counters in exposition format. Nothing serves them over HTTP.</p>
     <ul>
       <li>Events received/emitted/filtered/late</li>
       <li>Average processing time</li>
       <li>Atomic lock-free counters</li>
-      <li>/metrics HTTP endpoint</li>
+      <li>Rendered on demand by the caller</li>
     </ul>
   </div>
   <div class="card">
@@ -212,8 +212,8 @@
     <ul>
       <li>Sources: WebSocket, File, Kafka, MQTT</li>
       <li>Sinks: WebSocket, File, Kafka, MQTT, stdout</li>
-      <li>Operators: filter, geofence, proximity, rate_limit, spatial_agg, CEP</li>
-      <li>Checkpoint + replay configuration</li>
+      <li>Operators: filter, geofence, proximity, trajectory, rate_limit, spatial_agg, CEP</li>
+      <li>Replay configuration, metrics and checkpoint sections are rejected</li>
     </ul>
   </div>
 </div>
@@ -252,10 +252,11 @@
     <tr><td>Sub-MB memory</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
     <tr><td>TOML topology DSL</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
     <tr><td>Map matching</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
-    <tr><td>Checkpointing</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-    <tr><td>Prometheus metrics</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td></tr>
+    <tr><td>Checkpointing</td><td>lib</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+    <tr><td>Prometheus metrics</td><td>lib</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td></tr>
     <tr><td>Open source</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td></tr>
   </table>
+  <p>lib means the crate ships the API but a running pipeline does not use it.</p>
 </section>
 
 <section>
@@ -302,19 +303,15 @@ brokers = ["localhost:9092"]
 topic = "gps-events"
 group_id = "fluvius-fleet"
 
+[[pipeline.operators]]
+type = "rate_limit"
+name = "cap"
+max_per_second = 50.0
+
 [pipeline.sink]
 type = "mqtt"
 broker_url = "mqtt://localhost:1883"
 topic = "alerts/geofence"
-
-[pipeline.metrics]
-enabled = true
-port = 9090
-
-[pipeline.checkpoint]
-dir = "/var/lib/fluvius/checkpoints"
-interval_secs = 30
-max_retained = 5
     </pre>
   </div>
 </section>
