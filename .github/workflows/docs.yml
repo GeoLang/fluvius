@@ -28,11 +28,15 @@ jobs:
         run: cargo doc --all-features --workspace --no-deps
         env:
           RUSTDOCFLAGS: "--cfg docsrs -D warnings"
-      - name: Add redirect
-        run: echo '<meta http-equiv="refresh" content="0;url=fluvius_core/index.html">' > target/doc/index.html
+      # docs/ is the site, rustdoc goes underneath it
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp -r docs/. _site/
+          cp -r target/doc _site/api
       - uses: actions/configure-pages@v4
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: target/doc
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4
