@@ -34,6 +34,8 @@ jobs:
           mkdir -p _site
           cp -r docs/. _site/
           cp -r target/doc _site/api
+      - name: Redirect /api to the crate docs
+        run: echo '<meta http-equiv="refresh" content="0;url=fluvius_core/index.html">' > _site/api/index.html
       - uses: actions/configure-pages@v4
       - uses: actions/upload-pages-artifact@v3
         with:
