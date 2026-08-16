@@ -33,10 +33,7 @@ pub async fn write_jsonl(path: &Path, events: &[OutputEvent]) -> Result<(), std:
     let mut file = fs::File::create(path).await?;
 
     for event in events {
-        let line = serde_json::to_string(event)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        file.write_all(line.as_bytes()).await?;
-        file.write_all(b"\n").await?;
+        write_jsonl_line(&mut file, event).await?;
     }
 
     file.flush().await?;
@@ -51,11 +48,16 @@ pub async fn append_jsonl(path: &Path, event: &OutputEvent) -> Result<(), std::i
         .open(path)
         .await?;
 
-    let line = serde_json::to_string(event)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    file.write_all(line.as_bytes()).await?;
-    file.write_all(b"\n").await?;
+    write_jsonl_line(&mut file, event).await?;
+    file.flush().await?;
+    Ok(())
+}
 
+async fn write_jsonl_line(file: &mut fs::File, event: &OutputEvent) -> Result<(), std::io::Error> {
+    let mut line = serde_json::to_string(event)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    line.push('\n');
+    file.write_all(line.as_bytes()).await?;
     Ok(())
 }
 
@@ -159,6 +161,7 @@ mod tests {
         let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 3);
         assert!(lines[2].contains("\"seq\":2"));
+        assert!(!content.contains("}{"));
     }
 
     /// write_jsonl replaces the file, so a rerun does not append to the old results.

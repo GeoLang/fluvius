@@ -66,11 +66,7 @@ path = "{}"
     topology_run::run_topology(config).await.unwrap();
 
     let written = std::fs::read_to_string(&output).unwrap();
-    let outputs: Vec<serde_json::Value> = written
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
+    let outputs = parse_jsonl(&written);
 
     let geofence: Vec<&serde_json::Value> = outputs
         .iter()
@@ -133,11 +129,14 @@ path = "{}"
     topology_run::run_topology(config).await?;
 
     let written = std::fs::read_to_string(&output).unwrap_or_default();
-    Ok(written
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect())
+    Ok(parse_jsonl(&written))
+}
+
+fn parse_jsonl(written: &str) -> Vec<serde_json::Value> {
+    serde_json::Deserializer::from_str(written)
+        .into_iter::<serde_json::Value>()
+        .map(|r| r.unwrap_or_else(|e| panic!("bad jsonl: {e}; raw={written:?}")))
+        .collect()
 }
 
 /// The three-operator chain the docs advertise, run end to end without a broker.
@@ -360,15 +359,9 @@ path = "{}"
     topology_run::run_topology(config).await.unwrap();
 
     let written = std::fs::read_to_string(&output).unwrap();
-    let ids: Vec<String> = written
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            serde_json::from_str::<serde_json::Value>(l).unwrap()["source_event"]["entity_id"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
+    let ids: Vec<String> = parse_jsonl(&written)
+        .iter()
+        .map(|v| v["source_event"]["entity_id"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(ids, vec!["truck-1", "truck-3"]);
 }
