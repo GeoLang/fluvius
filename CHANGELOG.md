@@ -13,6 +13,11 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Trajectory emits a `stop` alert when an entity stays below 1 m/s for 30 s,
+  and includes a 3-point smoothed position on each update.
+- `map_match` is a topology operator: snap each event onto configured road
+  segments and forward the snapped coordinates.
+
 - `[pipeline.metrics]` and `[pipeline.checkpoint]` fail the run with an explanation
   instead of being silently ignored. Neither has a runner to attach to.
 - `PipelineConfig::metrics` is now `Option<MetricsConfig>`, so an absent section no

@@ -23,17 +23,39 @@ pub struct TrajectoryOperator {
     max_buffer: usize,
     /// Speed anomaly threshold (m/s). If computed speed exceeds this, emit alert.
     max_speed: f64,
+    /// Speed at or below this for `stop_duration` counts as a stop.
+    stop_speed: f64,
+    /// How long an entity must sit still before a stop is emitted, in seconds.
+    stop_duration_secs: f64,
     /// Entity trajectory buffers.
     trajectories: HashMap<String, Vec<TrajectoryPoint>>,
+    /// Last time each entity moved faster than `stop_speed`.
+    last_moving: HashMap<String, DateTime<Utc>>,
+    /// Entities we have already reported as stopped in this still stretch.
+    stopped: HashMap<String, bool>,
 }
 
 impl TrajectoryOperator {
     pub fn new(name: impl Into<String>, max_buffer: usize, max_speed: f64) -> Self {
+        Self::with_stops(name, max_buffer, max_speed, 1.0, 30.0)
+    }
+
+    pub fn with_stops(
+        name: impl Into<String>,
+        max_buffer: usize,
+        max_speed: f64,
+        stop_speed: f64,
+        stop_duration_secs: f64,
+    ) -> Self {
         Self {
             name: name.into(),
             max_buffer,
             max_speed,
+            stop_speed,
+            stop_duration_secs,
             trajectories: HashMap::new(),
+            last_moving: HashMap::new(),
+            stopped: HashMap::new(),
         }
     }
 
@@ -115,18 +137,48 @@ impl StatefulOperator for TrajectoryOperator {
                 });
             }
 
-            // Emit trajectory stats
-            let total_distance = Self::total_distance(trajectory);
+            if computed_speed > self.stop_speed {
+                self.last_moving
+                    .insert(event.entity_id.clone(), current.timestamp);
+                self.stopped.insert(event.entity_id.clone(), false);
+            } else {
+                let last = self
+                    .last_moving
+                    .get(&event.entity_id)
+                    .copied()
+                    .unwrap_or(previous.timestamp);
+                let still_secs = (current.timestamp - last).num_milliseconds() as f64 / 1000.0;
+                let already = self.stopped.get(&event.entity_id).copied().unwrap_or(false);
+                if still_secs >= self.stop_duration_secs && !already {
+                    self.stopped.insert(event.entity_id.clone(), true);
+                    outputs.push(OutputEvent {
+                        source_event: event.clone(),
+                        operator: self.name.clone(),
+                        payload: serde_json::json!({
+                            "alert": "stop",
+                            "entity_id": event.entity_id,
+                            "still_seconds": still_secs,
+                            "stop_speed_mps": self.stop_speed,
+                        }),
+                    });
+                }
+            }
+
+            let mut payload = serde_json::json!({
+                "type": "trajectory_update",
+                "entity_id": event.entity_id,
+                "point_count": trajectory.len(),
+                "total_distance_meters": Self::total_distance(trajectory),
+                "current_speed_mps": computed_speed,
+            });
+            if let Some((lon, lat)) = Self::smooth_position(trajectory, 3.min(trajectory.len())) {
+                payload["smoothed_lon"] = serde_json::json!(lon);
+                payload["smoothed_lat"] = serde_json::json!(lat);
+            }
             outputs.push(OutputEvent {
                 source_event: event.clone(),
                 operator: self.name.clone(),
-                payload: serde_json::json!({
-                    "type": "trajectory_update",
-                    "entity_id": event.entity_id,
-                    "point_count": trajectory.len(),
-                    "total_distance_meters": total_distance,
-                    "current_speed_mps": computed_speed,
-                }),
+                payload,
             });
         }
 
@@ -227,6 +279,20 @@ mod tests {
                 .unwrap()
                 > 0.0
         );
+    }
+
+    #[test]
+    fn test_stop_detection() {
+        let mut op = TrajectoryOperator::with_stops("traj", 100, 1000.0, 1.0, 30.0);
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        op.process(&Event::new("v1", 0.0, 0.0, ts));
+        // still for 40s, ~0 m/s
+        let out = op.process(&Event::new("v1", 0.0, 0.0, ts + Duration::seconds(40)));
+        assert!(
+            out.iter().any(|o| o.payload["alert"] == "stop"),
+            "expected a stop alert, got {out:?}"
+        );
+        assert!(out.iter().any(|o| o.payload.get("smoothed_lon").is_some()));
     }
 
     /// The running total covers every leg travelled so far, including the one that

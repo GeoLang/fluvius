@@ -84,6 +84,25 @@ pub enum OperatorConfig {
         name: String,
         pattern: PatternConfig,
     },
+    #[serde(rename = "map_match")]
+    MapMatch {
+        name: String,
+        #[serde(default = "default_match_distance")]
+        max_distance_m: f64,
+        roads: Vec<RoadConfig>,
+    },
+}
+
+fn default_match_distance() -> f64 {
+    50.0
+}
+
+/// One road segment for a map_match operator. `geometry` is lon/lat pairs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoadConfig {
+    pub id: String,
+    pub name: Option<String>,
+    pub geometry: Vec<[f64; 2]>,
 }
 
 fn default_max_buffer() -> usize {

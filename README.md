@@ -16,16 +16,16 @@ Zero JVM. Sub-MB footprint. Single binary.
 - **Geofencing** — Multi-zone polygon enter/exit detection with per-entity state tracking
 - **Proximity alerts** — Haversine distance triggers between moving entities
 - **Trajectory analysis** — Speed, stop detection, distance accumulation, path smoothing
-- **Spatial aggregation** — Real-time density grids, heatmaps, count/sum/mean/max/min
-- **Map matching** — Snap GPS points to road network with confidence scoring
+- **Spatial aggregation** — Real-time density grids, count/sum/mean/max/min
+- **Map matching** — Snap GPS points to a road network with confidence scoring (`map_match` topology operator)
 
 ### Stream Processing
 
 - **Complex Event Processing (CEP)** — Multi-step pattern sequences with spatial constraints and time windows
-- **Windowing** — Tumbling, sliding, session, and count-based windows
-- **Watermarks** — Event-time processing with configurable late-event tolerance
-- **Temporal joins** — Correlate events across multiple streams by entity + time proximity
-- **R-tree spatial index** — k-NN, radius, and bounding box queries over millions of entities
+- **Windowing** (library only): tumbling, sliding, session, and count-based windows. The topology runner does not use `WindowManager`
+- **Watermarks** (library only): event-time with late-event tolerance. The runner does not apply them
+- **Temporal joins** (library only): correlate events across streams by entity + time. Not a topology operator
+- **R-tree spatial index** (library only): k-NN, radius, and bounding box queries. Proximity uses a HashMap, not the index
 
 ### Connectors
 
@@ -107,7 +107,7 @@ broker_url = "mqtt://localhost:1883"
 topic = "alerts/geofence"
 ```
 
-`run --topology` wires the configured source and sink (file, websocket, kafka, mqtt) and chains the declared operators: `filter`, `geofence`, `proximity`, `trajectory`, `spatial_agg`, `cep`, `rate_limit`.
+`run --topology` wires the configured source and sink (file, websocket, kafka, mqtt) and chains the declared operators: `filter`, `geofence`, `proximity`, `trajectory`, `spatial_agg`, `cep`, `rate_limit`, `map_match`.
 
 A `filter` drops the events it rejects, so nothing downstream sees them. `rate_limit` is a token bucket over the whole stream, not per entity: it passes `max_per_second` events, bursting up to one second's worth, and drops the rest. The stateful operators emit their alerts and pass the event on, they never drop it. When the stream ends they are flushed, which is when `trajectory` emits its per-entity summary.
 

@@ -1,5 +1,7 @@
 //! Map matching — snap GPS points to a road network.
 
+use fluvius_core::event::{Event, OutputEvent};
+use fluvius_core::operator::MapOperator;
 use geo::algorithm::line_measures::{Distance, Haversine};
 use geo::{Coord, Line, LineString, Point};
 
@@ -143,6 +145,56 @@ fn project_point_on_segment(point: &Point<f64>, segment: &Line<f64>) -> (Coord<f
     (projected, dist)
 }
 
+/// Snaps each event onto `network` and forwards the snapped coordinates.
+pub struct MapMatchOperator {
+    name: String,
+    network: RoadNetwork,
+}
+
+impl MapMatchOperator {
+    pub fn new(name: impl Into<String>, network: RoadNetwork) -> Self {
+        Self {
+            name: name.into(),
+            network,
+        }
+    }
+}
+
+impl MapOperator for MapMatchOperator {
+    fn process(&self, event: &Event) -> Option<OutputEvent> {
+        match self.network.match_point(event.lon, event.lat) {
+            Some(m) => {
+                let mut snapped = event.clone();
+                snapped.lon = m.snapped_lon;
+                snapped.lat = m.snapped_lat;
+                Some(OutputEvent {
+                    source_event: snapped,
+                    operator: self.name.clone(),
+                    payload: serde_json::json!({
+                        "type": "map_match",
+                        "segment_id": m.segment_id,
+                        "road_name": m.road_name,
+                        "distance_m": m.distance_m,
+                        "confidence": m.confidence,
+                    }),
+                })
+            }
+            None => Some(OutputEvent {
+                source_event: event.clone(),
+                operator: self.name.clone(),
+                payload: serde_json::json!({
+                    "type": "map_match",
+                    "unmatched": true,
+                }),
+            }),
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +217,20 @@ mod tests {
             oneway: false,
         });
         net
+    }
+
+    #[test]
+    fn operator_snaps_and_forwards() {
+        use chrono::Utc;
+        use fluvius_core::event::Event;
+        use fluvius_core::operator::MapOperator;
+
+        let op = MapMatchOperator::new("snap", sample_network());
+        let event = Event::new("v1", 0.2, 0.0001, Utc::now());
+        let out = op.process(&event).expect("match emits");
+        assert_eq!(out.payload["segment_id"], "road1");
+        assert!((out.source_event.lat).abs() < 1e-6);
+        assert!((out.source_event.lon - 0.2).abs() < 1e-6);
     }
 
     #[test]

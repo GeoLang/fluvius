@@ -20,6 +20,7 @@ use fluvius_core::topology::{
     TopologyConfig, ZoneConfig,
 };
 use fluvius_geo::geofence::{GeofenceOperator, GeofenceZone};
+use fluvius_geo::map_match::{MapMatchOperator, RoadNetwork, RoadSegment};
 use fluvius_geo::proximity::ProximityOperator;
 use fluvius_geo::spatial_agg::{AggregateFunction, GridConfig, SpatialAggregator};
 use fluvius_geo::trajectory::TrajectoryOperator;
@@ -206,6 +207,37 @@ fn build_stage(config: &OperatorConfig) -> Result<Stage, String> {
             Ok(Stage::Map(Arc::new(RateLimitOperator::new(
                 name.clone(),
                 *max_per_second,
+            ))))
+        }
+        OperatorConfig::MapMatch {
+            name,
+            max_distance_m,
+            roads,
+        } => {
+            let mut network = RoadNetwork::new(*max_distance_m);
+            for road in roads {
+                if road.geometry.len() < 2 {
+                    return Err(format!(
+                        "map_match {name:?} road {} needs at least two points",
+                        road.id
+                    ));
+                }
+                network.add_segment(RoadSegment {
+                    id: road.id.clone(),
+                    name: road.name.clone(),
+                    geometry: LineString::from(
+                        road.geometry
+                            .iter()
+                            .map(|[lon, lat]| (*lon, *lat))
+                            .collect::<Vec<_>>(),
+                    ),
+                    speed_limit: None,
+                    oneway: false,
+                });
+            }
+            Ok(Stage::Map(Arc::new(MapMatchOperator::new(
+                name.clone(),
+                network,
             ))))
         }
     }
