@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- 2026-08-15: docs badge is 187 tests.
 - Trajectory emits a `stop` alert when an entity stays below 1 m/s for 30 s,
   and includes a 3-point smoothed position on each update.
 - `map_match` is a topology operator: snap each event onto configured road
