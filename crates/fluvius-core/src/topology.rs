@@ -43,6 +43,72 @@ pub struct PipelineConfig {
     pub metrics: Option<MetricsConfig>,
     pub checkpoint: Option<CheckpointConfig>,
     pub replay: Option<ReplayConfig>,
+    pub window: Option<WindowConfig>,
+    pub watermark: Option<WatermarkConfig>,
+}
+
+/// `[pipeline.window]` — tumbling, sliding, session, or count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowConfig {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub duration_secs: Option<u64>,
+    #[serde(default)]
+    pub slide_secs: Option<u64>,
+    #[serde(default)]
+    pub gap_secs: Option<u64>,
+    #[serde(default)]
+    pub count: Option<usize>,
+}
+
+/// `[pipeline.watermark]` — event-time lateness before a late event is dropped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatermarkConfig {
+    #[serde(default)]
+    pub max_lateness_secs: u64,
+}
+
+impl WindowConfig {
+    pub fn strategy(&self) -> Result<crate::window::WindowStrategy, String> {
+        use crate::window::WindowStrategy;
+        use chrono::Duration;
+        match self.kind.as_str() {
+            "tumbling" => {
+                let secs = self
+                    .duration_secs
+                    .ok_or("window type tumbling needs duration_secs")?;
+                Ok(WindowStrategy::Tumbling {
+                    duration: Duration::seconds(secs as i64),
+                })
+            }
+            "sliding" => {
+                let size = self
+                    .duration_secs
+                    .ok_or("window type sliding needs duration_secs")?;
+                let slide = self
+                    .slide_secs
+                    .ok_or("window type sliding needs slide_secs")?;
+                Ok(WindowStrategy::Sliding {
+                    size: Duration::seconds(size as i64),
+                    slide: Duration::seconds(slide as i64),
+                })
+            }
+            "session" => {
+                let gap = self.gap_secs.ok_or("window type session needs gap_secs")?;
+                Ok(WindowStrategy::Session {
+                    gap: Duration::seconds(gap as i64),
+                })
+            }
+            "count" => {
+                let size = self.count.ok_or("window type count needs count")?;
+                Ok(WindowStrategy::Count { size })
+            }
+            other => Err(format!(
+                "unknown window type {other:?}, expected tumbling, sliding, session, or count"
+            )),
+        }
+    }
 }
 
 /// Operator definition.
@@ -278,6 +344,35 @@ path = "output.jsonl"
         assert_eq!(config.pipeline.operators.len(), 1);
         assert!(config.pipeline.source.is_some());
         assert!(config.pipeline.sink.is_some());
+    }
+
+    #[test]
+    fn test_parse_window_and_watermark() {
+        let toml = r#"
+[pipeline]
+name = "w"
+
+[pipeline.window]
+type = "tumbling"
+duration_secs = 10
+
+[pipeline.watermark]
+max_lateness_secs = 2
+
+[pipeline.source]
+type = "file"
+path = "in.jsonl"
+
+[pipeline.sink]
+type = "file"
+path = "out.jsonl"
+"#;
+        let config = parse_topology(toml).unwrap();
+        let window = config.pipeline.window.expect("window");
+        assert_eq!(window.kind, "tumbling");
+        assert_eq!(window.duration_secs, Some(10));
+        assert_eq!(config.pipeline.watermark.unwrap().max_lateness_secs, 2);
+        assert!(window.strategy().is_ok());
     }
 
     #[test]

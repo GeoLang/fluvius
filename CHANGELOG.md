@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `[pipeline.window]` and `[pipeline.watermark]` drive the runner: tumbling,
+  sliding, session or count windows expire stateful operators, and events
+  older than `max_lateness_secs` are dropped.
 - `rate_limit` topology operator, a token bucket over the whole stream that drops
   what it rejects. Backed by `fluvius_core::operator::RateLimitOperator`.
 - `[pipeline.replay]` now runs: it replaces the source with a recorded JSON lines

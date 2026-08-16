@@ -22,8 +22,8 @@ Zero JVM. Sub-MB footprint. Single binary.
 ### Stream Processing
 
 - **Complex Event Processing (CEP)** — Multi-step pattern sequences with spatial constraints and time windows
-- **Windowing** (library only): tumbling, sliding, session, and count-based windows. The topology runner does not use `WindowManager`
-- **Watermarks** (library only): event-time with late-event tolerance. The runner does not apply them
+- **Windowing** — Tumbling, sliding, session, and count-based windows. `[pipeline.window]` expires stateful operators when a window closes
+- **Watermarks** — Event-time processing with configurable late-event tolerance. Late events past `max_lateness_secs` are dropped
 - **Temporal joins** (library only): correlate events across streams by entity + time. Not a topology operator
 - **R-tree spatial index** (library only): k-NN, radius, and bounding box queries. Proximity uses a HashMap, not the index
 
@@ -110,6 +110,17 @@ topic = "alerts/geofence"
 `run --topology` wires the configured source and sink (file, websocket, kafka, mqtt) and chains the declared operators: `filter`, `geofence`, `proximity`, `trajectory`, `spatial_agg`, `cep`, `rate_limit`, `map_match`.
 
 A `filter` drops the events it rejects, so nothing downstream sees them. `rate_limit` is a token bucket over the whole stream, not per entity: it passes `max_per_second` events, bursting up to one second's worth, and drops the rest. The stateful operators emit their alerts and pass the event on, they never drop it. When the stream ends they are flushed, which is when `trajectory` emits its per-entity summary.
+
+`[pipeline.window]` expires stateful operators when a window closes. `[pipeline.watermark]` drops events older than the watermark plus `max_lateness_secs`:
+
+```toml
+[pipeline.window]
+type = "tumbling"
+duration_secs = 10
+
+[pipeline.watermark]
+max_lateness_secs = 2
+```
 
 `[pipeline.replay]` replaces the source with a recorded JSON lines file, paced by the event timestamps. `speed` is a multiplier over the recording, and `inf` replays as fast as the pipeline accepts events:
 

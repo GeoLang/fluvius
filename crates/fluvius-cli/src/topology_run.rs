@@ -68,6 +68,13 @@ pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
     for op in &pipeline_cfg.operators {
         pipeline.add_stage(build_stage(op)?);
     }
+    if let Some(window) = &pipeline_cfg.window {
+        let lateness = pipeline_cfg
+            .watermark
+            .as_ref()
+            .map_or(0, |w| w.max_lateness_secs);
+        pipeline.set_window_lateness_secs(window.strategy()?, lateness);
+    }
 
     let rx_in = match &pipeline_cfg.replay {
         Some(replay) => {
@@ -98,6 +105,7 @@ pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
     println!("  Events received: {}", metrics.events_received);
     println!("  Events emitted: {}", metrics.events_emitted);
     println!("  Events filtered: {}", metrics.events_filtered);
+    println!("  Events late: {}", metrics.events_late);
     Ok(())
 }
 

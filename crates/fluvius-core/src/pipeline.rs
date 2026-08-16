@@ -1,10 +1,13 @@
 //! Stream processing pipeline — connects sources, operators, and sinks.
 
+use chrono::Duration;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::event::{Event, OutputEvent};
 use crate::operator::{MapOperator, StatefulOperator};
+use crate::watermark::Watermark;
+use crate::window::{WindowManager, WindowStrategy};
 
 /// One step in a pipeline's operator chain.
 pub enum Stage {
@@ -20,6 +23,8 @@ pub enum Stage {
 pub struct Pipeline {
     name: String,
     stages: Vec<Stage>,
+    windows: Option<WindowManager>,
+    watermark: Option<Watermark>,
 }
 
 /// Pipeline execution metrics.
@@ -28,6 +33,8 @@ pub struct PipelineMetrics {
     pub events_received: u64,
     pub events_emitted: u64,
     pub events_filtered: u64,
+    /// dropped because they arrived after the watermark plus max lateness
+    pub events_late: u64,
 }
 
 impl Pipeline {
@@ -35,7 +42,20 @@ impl Pipeline {
         Self {
             name: name.into(),
             stages: Vec::new(),
+            windows: None,
+            watermark: None,
         }
+    }
+
+    /// Expire stateful stages when a tumbling (or other) window closes, using
+    /// event-time watermarks. Late events past `max_lateness` are dropped.
+    pub fn set_window(&mut self, strategy: WindowStrategy, max_lateness: Duration) {
+        self.windows = Some(WindowManager::new(strategy));
+        self.watermark = Some(Watermark::new(max_lateness));
+    }
+
+    pub fn set_window_lateness_secs(&mut self, strategy: WindowStrategy, max_lateness_secs: u64) {
+        self.set_window(strategy, Duration::seconds(max_lateness_secs as i64));
     }
 
     /// Append a stage to the operator chain.
@@ -64,6 +84,21 @@ impl Pipeline {
 
         while let Some(event) = input.recv().await {
             metrics.events_received += 1;
+
+            if let Some(wm) = &mut self.watermark
+                && !wm.advance(&event.timestamp)
+            {
+                metrics.events_late += 1;
+                continue;
+            }
+            if let (Some(wm), Some(windows)) = (&self.watermark, &mut self.windows) {
+                for _expired in windows.expire(wm.current()) {
+                    if !flush_stateful(&mut self.stages, &output, &mut metrics).await {
+                        return metrics;
+                    }
+                }
+            }
+
             let mut current = event;
 
             for stage in &mut self.stages {
@@ -91,27 +126,42 @@ impl Pipeline {
                     }
                 }
             }
-        }
 
-        for stage in &mut self.stages {
-            if let Stage::Stateful(op) = stage {
-                for out in op.on_window_close() {
-                    if output.send(out).await.is_err() {
-                        return metrics;
-                    }
-                    metrics.events_emitted += 1;
-                }
+            if let Some(windows) = &mut self.windows {
+                windows.assign(current);
             }
         }
 
+        let _ = flush_stateful(&mut self.stages, &output, &mut metrics).await;
         metrics
     }
+}
+
+/// true if the sink is still accepting
+async fn flush_stateful(
+    stages: &mut [Stage],
+    output: &mpsc::Sender<OutputEvent>,
+    metrics: &mut PipelineMetrics,
+) -> bool {
+    for stage in stages.iter_mut() {
+        if let Stage::Stateful(op) = stage {
+            for out in op.on_window_close() {
+                if output.send(out).await.is_err() {
+                    return false;
+                }
+                metrics.events_emitted += 1;
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::operator::{FilterOperator, RateLimiter};
+    use crate::window::WindowStrategy;
+    use chrono::DateTime;
 
     #[tokio::test]
     async fn test_pipeline_basic() {
@@ -188,10 +238,12 @@ mod tests {
         }
 
         fn on_window_close(&mut self) -> Vec<OutputEvent> {
+            let total = self.seen;
+            self.seen = 0;
             vec![OutputEvent {
                 source_event: Event::now("summary", 0.0, 0.0),
                 operator: "counter".into(),
-                payload: serde_json::json!({"total": self.seen}),
+                payload: serde_json::json!({"total": total}),
             }]
         }
 
@@ -387,5 +439,65 @@ mod tests {
 
         let boosted = rx_out.recv().await.unwrap();
         assert_eq!(boosted.source_event.speed, Some(101.0));
+    }
+
+    #[tokio::test]
+    async fn tumbling_window_flushes_stateful_when_it_closes() {
+        let mut pipeline = Pipeline::new("windows");
+        pipeline.add_stage(Stage::Stateful(Box::new(Counter { seen: 0 })));
+        pipeline.set_window(
+            WindowStrategy::Tumbling {
+                duration: Duration::seconds(10),
+            },
+            Duration::seconds(0),
+        );
+
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        let (tx_in, rx_in) = mpsc::channel(10);
+        let (tx_out, mut rx_out) = mpsc::channel(10);
+        tx_in.send(Event::new("v1", 0.0, 0.0, ts)).await.unwrap();
+        tx_in
+            .send(Event::new("v1", 0.0, 0.0, ts + Duration::seconds(11)))
+            .await
+            .unwrap();
+        drop(tx_in);
+
+        pipeline.run(rx_in, tx_out).await;
+
+        let mut totals = Vec::new();
+        while let Some(out) = rx_out.recv().await {
+            if let Some(t) = out.payload.get("total") {
+                totals.push(t.as_u64().unwrap());
+            }
+        }
+        // first window closes on the second event; end of stream flushes the next
+        assert_eq!(totals, vec![1, 1]);
+    }
+
+    #[tokio::test]
+    async fn late_events_past_the_watermark_are_dropped() {
+        let mut pipeline = Pipeline::new("late");
+        pipeline.add_operator(Arc::new(FilterOperator::new("pass", |_| true)));
+        pipeline.set_window(
+            WindowStrategy::Tumbling {
+                duration: Duration::seconds(10),
+            },
+            Duration::seconds(2),
+        );
+
+        let ts = DateTime::from_timestamp(100, 0).unwrap();
+        let (tx_in, rx_in) = mpsc::channel(10);
+        let (tx_out, _rx_out) = mpsc::channel(10);
+        tx_in.send(Event::new("v1", 0.0, 0.0, ts)).await.unwrap();
+        tx_in
+            .send(Event::new("v2", 0.0, 0.0, ts - Duration::seconds(10)))
+            .await
+            .unwrap();
+        drop(tx_in);
+
+        let metrics = pipeline.run(rx_in, tx_out).await;
+        assert_eq!(metrics.events_late, 1);
+        assert_eq!(metrics.events_received, 2);
+        assert_eq!(metrics.events_emitted, 1);
     }
 }
