@@ -5,7 +5,7 @@
 
 Real-time geospatial stream processor. Sub-second latency processing for continuous spatial data streams — GPS tracks, IoT sensors, vehicle telemetry, drone feeds.
 
-Zero JVM. Sub-MB footprint. Single binary.
+Zero JVM. Single binary (4 MB release build with default features, larger with `--features kafka`).
 
 [Documentation](https://geolang.github.io/fluvius/) · [GitHub](https://github.com/GeoLang/fluvius)
 
@@ -22,17 +22,17 @@ Zero JVM. Sub-MB footprint. Single binary.
 ### Stream Processing
 
 - **Complex Event Processing (CEP)** — Multi-step pattern sequences with spatial constraints and time windows
-- **Windowing** — Tumbling, sliding, session, and count-based windows. `[pipeline.window]` expires stateful operators when a window closes
+- **Windowing** — Tumbling, sliding and session windows. `[pipeline.window]` expires stateful operators when a window closes. Count-based windows do not work: a count window takes its end from the wall clock while expiry compares against the event-time watermark, so it never closes and the configured count plays no part
 - **Watermarks** — Event-time processing with configurable late-event tolerance. Late events past `max_lateness_secs` are dropped
 - **Temporal joins** (library only): correlate events across streams by entity + time. Not a topology operator
 - **R-tree spatial index** (library only): k-NN, radius, and bounding box queries. Proximity uses a HashMap, not the index
 
 ### Connectors
 
-- **WebSocket** — Source and sink for real-time browser/client integration
+- **WebSocket** — Source and sink for real-time browser/client integration. Both bind a listener and wait for clients, neither connects out to a remote feed
 - **File** — JSON lines input/output
 - **Kafka** (rdkafka): consumer source and producer sink over JSON events, consumer groups. Build with `--features kafka` (vendored librdkafka via cmake, no system libs needed).
-- **MQTT** (rumqttc): IoT pub/sub source and sink over JSON events, configurable QoS 0/1/2. Build with `--features mqtt` (pure Rust).
+- **MQTT** (rumqttc): IoT pub/sub source and sink over JSON events. QoS and credentials are configurable from the library API only, a topology declares a broker URL and topic and gets QoS 1 with no credentials. Build with `--features mqtt` (pure Rust).
 
 ### Operations
 
@@ -166,11 +166,10 @@ The `geofence`, `proximity` and `trajectory` subcommands run a single operator o
 | Feature | Fluvius | Kafka Streams | Apache Flink | Esri GeoEvent |
 |---------|---------|---------------|--------------|---------------|
 | Native spatial operators | ✓ | ✗ | ✗ | ✓ |
-| R-tree spatial index | ✓ | ✗ | ✗ | ✗ |
+| R-tree spatial index | lib | ✗ | ✗ | ✗ |
 | CEP + spatial | ✓ | ✗ | ✓ | ✗ |
 | Zero JVM | ✓ | ✗ | ✗ | ✗ |
 | Single binary | ✓ | ✗ | ✗ | ✗ |
-| Sub-MB memory | ✓ | ✗ | ✗ | ✗ |
 | TOML topology DSL | ✓ | ✗ | ✗ | ✗ |
 | Map matching | ✓ | ✗ | ✗ | ✗ |
 | Checkpointing | lib | ✓ | ✓ | ✓ |

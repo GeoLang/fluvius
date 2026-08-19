@@ -44,21 +44,21 @@
 <div class="container">
 <header>
   <h1>Fluvius</h1>
-  <p>Real-time geospatial stream processing. Zero JVM. Sub-MB footprint.</p>
+  <p>Real-time geospatial stream processing. Zero JVM. Single binary.</p>
   <div class="badges">
     <span class="badge">Rust</span>
     <span class="badge">Tokio async</span>
     <span class="badge">AGPL-3.0</span>
     <span class="badge">4 crates</span>
-    <span class="badge">187 tests</span>
+    <span class="badge">176 tests (cargo test --workspace)</span>
     <span class="badge">Linux / macOS / Windows</span>
   </div>
 </header>
 
 <div class="grid">
   <div class="card">
-    <h3>R-tree Spatial Index</h3>
-    <p>Fast spatial queries over millions of entities in real-time.</p>
+    <h3>R-tree Spatial Index (library only)</h3>
+    <p>Spatial queries over indexed entities. No pipeline operator uses it, proximity keeps its own HashMap.</p>
     <ul>
       <li>k-Nearest Neighbor queries</li>
       <li>Bounding box search</li>
@@ -78,12 +78,12 @@
   </div>
   <div class="card">
     <h3>Windowing Engine</h3>
-    <p>Four window types with event-time semantics.</p>
+    <p>Event-time windows. A closing window is only a trigger to flush the stateful operators, the pipeline discards what the window accumulated, so a window is not an aggregation unit.</p>
     <ul>
       <li>Tumbling windows</li>
       <li>Sliding windows</li>
       <li>Session windows (gap-based)</li>
-      <li>Count-based windows</li>
+      <li>Count-based windows: do not work, they take their end from the wall clock and never expire against the event-time watermark</li>
     </ul>
   </div>
   <div class="card">
@@ -93,7 +93,6 @@
       <li>Configurable watermark delay</li>
       <li>Late event detection</li>
       <li>Tolerance thresholds</li>
-      <li>Processing-time fallback</li>
     </ul>
   </div>
   <div class="card">
@@ -101,9 +100,9 @@
     <p>Real-time geofence entry/exit detection.</p>
     <ul>
       <li>Multi-zone polygon support</li>
-      <li>Enter/exit/inside/outside events</li>
+      <li>Enter/exit transition events</li>
       <li>Per-entity state tracking</li>
-      <li>Arbitrary polygon shapes</li>
+      <li>Arbitrary polygon shapes from the library API. A topology zone is a centre plus radius turned into a 64-segment circle, and the geofence subcommand takes a bounding box</li>
     </ul>
   </div>
   <div class="card">
@@ -128,7 +127,7 @@
   </div>
   <div class="card">
     <h3>Spatial Aggregation</h3>
-    <p>Real-time density grids, heatmaps, and clustering.</p>
+    <p>Real-time density grids and heatmaps over a fixed lon/lat grid.</p>
     <ul>
       <li>Configurable grid cell size</li>
       <li>Count / Sum / Mean / Max / Min</li>
@@ -142,23 +141,20 @@
     <ul>
       <li>Nearest-segment projection</li>
       <li>Confidence scoring</li>
-      <li>Trajectory matching</li>
-      <li>Road attribute lookup</li>
+      <li>Trajectory matching (library only). The operator matches each event on its own, with no sequence logic</li>
     </ul>
   </div>
   <div class="card">
     <h3>Checkpointing (library only)</h3>
-    <p>Periodic state snapshots for crash recovery. The topology runner keeps no state store, so it cannot checkpoint a pipeline.</p>
+    <p>State snapshots for crash recovery, taken when the caller asks for one. The topology runner keeps no state store, so it cannot checkpoint a pipeline.</p>
     <ul>
-      <li>Configurable checkpoint interval</li>
       <li>Automatic garbage collection</li>
-      <li>State restore on startup</li>
       <li>JSON-serialized snapshots</li>
     </ul>
   </div>
   <div class="card">
-    <h3>Temporal Joins</h3>
-    <p>Correlate events across multiple streams.</p>
+    <h3>Temporal Joins (library only)</h3>
+    <p>Correlate events across multiple streams. Not a topology operator.</p>
     <ul>
       <li>Inner and left-outer joins</li>
       <li>Entity + time proximity matching</li>
@@ -193,27 +189,26 @@
       <li>Consumer source (subscribe)</li>
       <li>Producer sink (publish)</li>
       <li>Consumer groups</li>
-      <li>rdkafka-ready interface</li>
+      <li>Built on rdkafka, with vendored librdkafka</li>
     </ul>
   </div>
   <div class="card">
     <h3>MQTT Connector</h3>
     <p>IoT device integration via MQTT protocol.</p>
     <ul>
-      <li>QoS 0/1/2 support</li>
       <li>Subscriber source</li>
       <li>Publisher sink</li>
-      <li>Authentication support</li>
+      <li>QoS 0/1/2 and authentication from the library API only. A topology declares a broker URL and topic, and gets QoS 1 with no credentials</li>
     </ul>
   </div>
   <div class="card">
     <h3>Topology DSL (TOML)</h3>
     <p>Declare pipelines without writing code.</p>
     <ul>
-      <li>Sources: WebSocket, File, Kafka, MQTT</li>
+      <li>Sources: WebSocket (binds a listener, it does not connect to a remote feed), File, Kafka, MQTT</li>
       <li>Sinks: WebSocket, File, Kafka, MQTT, stdout</li>
-      <li>Operators: filter, geofence, proximity, trajectory, rate_limit, spatial_agg, CEP</li>
-      <li>Replay configuration, metrics and checkpoint sections are rejected</li>
+      <li>Operators: filter, geofence, proximity, trajectory, rate_limit, spatial_agg, CEP, map_match</li>
+      <li>Replay configuration replaces the source. Metrics and checkpoint sections are rejected</li>
     </ul>
   </div>
 </div>
@@ -245,11 +240,10 @@
   <table>
     <tr><th>Feature</th><th>Fluvius</th><th>Kafka Streams</th><th>Apache Flink</th><th>Esri GeoEvent</th></tr>
     <tr><td>Native spatial operators</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td></tr>
-    <tr><td>R-tree spatial index</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+    <tr><td>R-tree spatial index</td><td>lib</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
     <tr><td>CEP + spatial</td><td class="yes">✓</td><td class="no">✗</td><td class="yes">✓</td><td class="no">✗</td></tr>
     <tr><td>Zero JVM</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
     <tr><td>Single binary</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
-    <tr><td>Sub-MB memory</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
     <tr><td>TOML topology DSL</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
     <tr><td>Map matching</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
     <tr><td>Checkpointing</td><td>lib</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
@@ -265,7 +259,9 @@
     <pre>
 # Build from source
 git clone https://github.com/GeoLang/fluvius.git
-cd fluvius &amp;&amp; cargo build --release
+cd fluvius &amp;&amp; cargo build --release --features kafka,mqtt
+# The Kafka and MQTT connectors need their features, a default build rejects
+# such a topology at runtime.
 
 # Run with a TOML topology
 fluvius run --topology pipeline.toml
