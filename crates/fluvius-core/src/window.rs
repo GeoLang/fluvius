@@ -174,17 +174,16 @@ impl WindowManager {
                     if last.count() < *size {
                         self.windows.len() - 1
                     } else {
-                        let now = Utc::now();
-                        self.windows.push(Window::new(now, now));
+                        self.windows.push(Window::new(ts, ts));
                         self.windows.len() - 1
                     }
                 } else {
-                    let now = Utc::now();
-                    self.windows.push(Window::new(now, now));
+                    self.windows.push(Window::new(ts, ts));
                     0
                 };
 
                 self.windows[idx].add(event);
+                self.windows[idx].end = ts;
                 assigned.push(idx);
             }
         }
@@ -192,10 +191,18 @@ impl WindowManager {
         assigned
     }
 
-    /// Get expired windows (whose end time is before the given watermark).
+    /// Get expired windows: time-based when `end` is at or before the watermark,
+    /// count-based when `count() >= size`.
     pub fn expire(&mut self, watermark: &DateTime<Utc>) -> Vec<Window> {
-        let (expired, active): (Vec<_>, Vec<_>) =
-            self.windows.drain(..).partition(|w| w.end <= *watermark);
+        let count_size = if let WindowStrategy::Count { size } = &self.strategy {
+            Some(*size)
+        } else {
+            None
+        };
+        let (expired, active): (Vec<_>, Vec<_>) = match count_size {
+            Some(size) => self.windows.drain(..).partition(|w| w.count() >= size),
+            None => self.windows.drain(..).partition(|w| w.end <= *watermark),
+        };
         self.windows = active;
         expired
     }
@@ -277,8 +284,14 @@ mod tests {
         let strategy = WindowStrategy::Count { size: 3 };
         let mut mgr = WindowManager::new(strategy);
 
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
         for i in 0..7 {
-            let e = Event::now(format!("e{i}"), i as f64, 0.0);
+            let e = Event::new(
+                format!("e{i}"),
+                i as f64,
+                0.0,
+                ts + Duration::seconds(i as i64),
+            );
             mgr.assign(e);
         }
 
@@ -286,6 +299,49 @@ mod tests {
         assert_eq!(mgr.windows()[0].count(), 3);
         assert_eq!(mgr.windows()[1].count(), 3);
         assert_eq!(mgr.windows()[2].count(), 1);
+
+        let expired = mgr.expire(&ts);
+        assert_eq!(expired.len(), 2);
+        assert_eq!(expired[0].count(), 3);
+        assert_eq!(expired[1].count(), 3);
+        assert_eq!(mgr.windows().len(), 1);
+        assert_eq!(mgr.windows()[0].count(), 1);
+    }
+
+    #[test]
+    fn test_count_window_expires_when_full() {
+        let strategy = WindowStrategy::Count { size: 3 };
+        let mut mgr = WindowManager::new(strategy);
+
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        for i in 0..3 {
+            mgr.assign(Event::new(
+                format!("e{i}"),
+                i as f64,
+                0.0,
+                ts + Duration::seconds(i as i64),
+            ));
+        }
+
+        let expired = mgr.expire(&ts);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].count(), 3);
+        assert_eq!(mgr.windows().len(), 0);
+    }
+
+    #[test]
+    fn test_count_window_partial_does_not_expire() {
+        let strategy = WindowStrategy::Count { size: 3 };
+        let mut mgr = WindowManager::new(strategy);
+
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        mgr.assign(Event::new("e0", 0.0, 0.0, ts));
+        mgr.assign(Event::new("e1", 1.0, 0.0, ts + Duration::seconds(1)));
+
+        let expired = mgr.expire(&(ts + Duration::hours(24)));
+        assert!(expired.is_empty());
+        assert_eq!(mgr.windows().len(), 1);
+        assert_eq!(mgr.windows()[0].count(), 2);
     }
 
     #[test]

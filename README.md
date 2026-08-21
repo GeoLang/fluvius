@@ -22,7 +22,7 @@ Zero JVM. Single binary (4 MB release build with default features, larger with `
 ### Stream Processing
 
 - **Complex Event Processing (CEP)** — Multi-step pattern sequences with spatial constraints and time windows
-- **Windowing** — Tumbling, sliding and session windows. `[pipeline.window]` expires stateful operators when a window closes. Count-based windows do not work: a count window takes its end from the wall clock while expiry compares against the event-time watermark, so it never closes and the configured count plays no part
+- **Windowing** — Tumbling, sliding, session and count windows. `[pipeline.window]` expires stateful operators when a window closes. Count windows close when they fill; time windows close against the event-time watermark
 - **Watermarks** — Event-time processing with configurable late-event tolerance. Late events past `max_lateness_secs` are dropped
 - **Temporal joins** (library only): correlate events across streams by entity + time. Not a topology operator
 - **R-tree spatial index** (library only): k-NN, radius, and bounding box queries. Proximity uses a HashMap, not the index

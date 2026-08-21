@@ -475,6 +475,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn count_window_flushes_stateful_when_it_fills() {
+        let mut pipeline = Pipeline::new("count-windows");
+        pipeline.add_stage(Stage::Stateful(Box::new(Counter { seen: 0 })));
+        pipeline.set_window(WindowStrategy::Count { size: 3 }, Duration::seconds(0));
+
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        let (tx_in, rx_in) = mpsc::channel(10);
+        let (tx_out, mut rx_out) = mpsc::channel(10);
+        for i in 0..4 {
+            tx_in
+                .send(Event::new("v1", 0.0, 0.0, ts + Duration::seconds(i)))
+                .await
+                .unwrap();
+        }
+        drop(tx_in);
+
+        pipeline.run(rx_in, tx_out).await;
+
+        let mut totals = Vec::new();
+        while let Some(out) = rx_out.recv().await {
+            if let Some(t) = out.payload.get("total") {
+                totals.push(t.as_u64().unwrap());
+            }
+        }
+        // first count window closes on the 4th event; end of stream flushes the rest
+        assert_eq!(totals, vec![3, 1]);
+    }
+
+    #[tokio::test]
     async fn late_events_past_the_watermark_are_dropped() {
         let mut pipeline = Pipeline::new("late");
         pipeline.add_operator(Arc::new(FilterOperator::new("pass", |_| true)));

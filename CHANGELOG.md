@@ -14,6 +14,11 @@ All notable changes to this project will be documented in this file.
 - `[pipeline.replay]` now runs: it replaces the source with a recorded JSON lines
   file paced by the event timestamps, `speed = inf` for max speed.
 
+### Fixed
+
+- Count windows expire when they fill (`count >= size`) instead of comparing a
+  wall-clock end against the event-time watermark.
+
 ### Changed
 
 - 2026-08-16: file sink writes each event as one flushed jsonl line.
