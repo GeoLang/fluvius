@@ -1,11 +1,18 @@
 //! Proximity detection — distance-based alerts between entities.
 
-use std::collections::HashMap;
-
 use fluvius_core::event::{Event, OutputEvent};
 use fluvius_core::operator::StatefulOperator;
+use fluvius_core::spatial_index::SpatialIndex;
 use geo::Point;
 use geo::algorithm::line_measures::{Distance, Haversine};
+
+const METERS_PER_DEGREE_LATITUDE: f64 = 111_320.0;
+
+/// widens the query box so a neighbour sitting exactly on the threshold survives rounding
+const BOUNDING_BOX_PADDING_FACTOR: f64 = 1.01;
+
+const MINIMUM_LONGITUDE: f64 = -180.0;
+const MAXIMUM_LONGITUDE: f64 = 180.0;
 
 /// Proximity operator — emits alerts when entities come within a threshold distance.
 pub struct ProximityOperator {
@@ -13,7 +20,7 @@ pub struct ProximityOperator {
     /// Distance threshold in meters.
     threshold_meters: f64,
     /// Last known position per entity.
-    positions: HashMap<String, (f64, f64)>,
+    index: SpatialIndex,
 }
 
 impl ProximityOperator {
@@ -21,9 +28,26 @@ impl ProximityOperator {
         Self {
             name: name.into(),
             threshold_meters,
-            positions: HashMap::new(),
+            index: SpatialIndex::new(),
         }
     }
+}
+
+/// Longitude span covering `latitude_half_width_degrees` of ground distance at `latitude`,
+/// falling back to the whole globe at a pole or across the antimeridian.
+fn longitude_range(longitude: f64, latitude: f64, latitude_half_width_degrees: f64) -> (f64, f64) {
+    if latitude.abs() + latitude_half_width_degrees >= 90.0 {
+        return (MINIMUM_LONGITUDE, MAXIMUM_LONGITUDE);
+    }
+
+    let half_width_degrees = latitude_half_width_degrees / latitude.to_radians().cos();
+    let minimum = longitude - half_width_degrees;
+    let maximum = longitude + half_width_degrees;
+    if minimum < MINIMUM_LONGITUDE || maximum > MAXIMUM_LONGITUDE {
+        return (MINIMUM_LONGITUDE, MAXIMUM_LONGITUDE);
+    }
+
+    (minimum, maximum)
 }
 
 impl StatefulOperator for ProximityOperator {
@@ -31,12 +55,25 @@ impl StatefulOperator for ProximityOperator {
         let mut outputs = Vec::new();
         let event_point = Point::new(event.lon, event.lat);
 
-        // Check distance to all other known entities
-        for (other_id, (lon, lat)) in &self.positions {
-            if *other_id == event.entity_id {
+        let latitude_half_width_degrees =
+            self.threshold_meters / METERS_PER_DEGREE_LATITUDE * BOUNDING_BOX_PADDING_FACTOR;
+        let (minimum_longitude, maximum_longitude) =
+            longitude_range(event.lon, event.lat, latitude_half_width_degrees);
+        let candidates = self.index.query_bbox(
+            minimum_longitude,
+            event.lat - latitude_half_width_degrees,
+            maximum_longitude,
+            event.lat + latitude_half_width_degrees,
+        );
+
+        for other_id in candidates {
+            if other_id == event.entity_id {
                 continue;
             }
-            let other_point = Point::new(*lon, *lat);
+            let Some([lon, lat]) = self.index.get_position(&other_id) else {
+                continue;
+            };
+            let other_point = Point::new(lon, lat);
             let distance = Haversine::distance(event_point, other_point);
 
             if distance <= self.threshold_meters {
@@ -55,15 +92,14 @@ impl StatefulOperator for ProximityOperator {
         }
 
         // Update this entity's position
-        self.positions
-            .insert(event.entity_id.clone(), (event.lon, event.lat));
+        self.index.update(event);
 
         outputs
     }
 
     fn on_window_close(&mut self) -> Vec<OutputEvent> {
         // Clear stale positions on window close
-        self.positions.clear();
+        self.index.clear();
         vec![]
     }
 
@@ -191,6 +227,36 @@ mod tests {
         assert!(op.process(&Event::now("v2", 0.001, 0.0)).is_empty());
         // but v2 is now tracked, so v3 alongside it does alert
         assert_eq!(op.process(&Event::now("v3", 0.001, 0.0)).len(), 1);
+    }
+
+    /// Neighbours a few hundred metres apart across the 180th meridian still alert,
+    /// even though their longitudes differ by almost 360 degrees.
+    #[test]
+    fn test_alert_across_the_antimeridian() {
+        let mut op = ProximityOperator::new("proximity", 1000.0);
+        op.process(&Event::now("east", 179.9995, 0.0));
+
+        let out = op.process(&Event::now("west", -179.9995, 0.0));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload["entity_b"], "east");
+        let distance = out[0].payload["distance_meters"].as_f64().unwrap();
+        assert!(distance < 1000.0, "distance was {distance}");
+    }
+
+    /// At latitude 60 a degree of longitude is half as wide as at the equator, so the
+    /// query box has to widen by the same factor to catch this pair.
+    #[test]
+    fn test_longitude_box_widens_with_latitude() {
+        let mut alerting = ProximityOperator::new("proximity", 700.0);
+        alerting.process(&Event::now("v1", 10.0, 60.0));
+        // about 556 m apart
+        let out = alerting.process(&Event::now("v2", 10.01, 60.0));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload["entity_b"], "v1");
+
+        let mut quiet = ProximityOperator::new("proximity", 500.0);
+        quiet.process(&Event::now("v1", 10.0, 60.0));
+        assert!(quiet.process(&Event::now("v2", 10.01, 60.0)).is_empty());
     }
 
     #[test]

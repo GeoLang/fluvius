@@ -14,7 +14,6 @@ pub mod predict;
 pub mod replay;
 pub mod spatial_index;
 pub mod state;
-pub mod temporal_join;
 pub mod tenant;
 pub mod topology;
 pub mod watermark;

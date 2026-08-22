@@ -57,8 +57,8 @@
 
 <div class="grid">
   <div class="card">
-    <h3>R-tree Spatial Index (library only)</h3>
-    <p>Spatial queries over indexed entities. No pipeline operator uses it, proximity keeps its own HashMap.</p>
+    <h3>R-tree Spatial Index</h3>
+    <p>Spatial queries over indexed entities. The proximity operator queries the index.</p>
     <ul>
       <li>k-Nearest Neighbor queries</li>
       <li>Bounding box search</li>
@@ -153,16 +153,6 @@
     </ul>
   </div>
   <div class="card">
-    <h3>Temporal Joins (library only)</h3>
-    <p>Correlate events across multiple streams. Not a topology operator.</p>
-    <ul>
-      <li>Inner and left-outer joins</li>
-      <li>Entity + time proximity matching</li>
-      <li>Configurable time windows</li>
-      <li>Automatic buffer expiration</li>
-    </ul>
-  </div>
-  <div class="card">
     <h3>Replay Mode</h3>
     <p>Replay historical data at configurable speed.</p>
     <ul>
@@ -229,7 +219,7 @@
 │                        fluvius-core                              │
 │  Pipeline │ Operators │ Windows │ Watermarks │ State            │
 │  CEP │ Spatial Index │ Checkpoint │ Metrics │ Replay            │
-│  Temporal Joins │ Topology DSL                                  │
+│  Topology DSL                                                   │
 └─────────────────────────────────────────────────────────────────┘
     </pre>
   </div>
@@ -240,7 +230,7 @@
   <table>
     <tr><th>Feature</th><th>Fluvius</th><th>Kafka Streams</th><th>Apache Flink</th><th>Esri GeoEvent</th></tr>
     <tr><td>Native spatial operators</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td></tr>
-    <tr><td>R-tree spatial index</td><td>lib</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+    <tr><td>R-tree spatial index</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
     <tr><td>CEP + spatial</td><td class="yes">✓</td><td class="no">✗</td><td class="yes">✓</td><td class="no">✗</td></tr>
     <tr><td>Zero JVM</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
     <tr><td>Single binary</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>

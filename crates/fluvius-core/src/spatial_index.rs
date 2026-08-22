@@ -116,6 +116,13 @@ impl SpatialIndex {
         }
     }
 
+    /// Drop every indexed entity.
+    pub fn clear(&self) {
+        let mut inner = self.inner.write().unwrap();
+        inner.tree = RTree::new();
+        inner.positions.clear();
+    }
+
     /// Number of entities currently indexed.
     pub fn len(&self) -> usize {
         let inner = self.inner.read().unwrap();
@@ -202,5 +209,23 @@ mod tests {
         idx.remove("v1");
         assert_eq!(idx.len(), 0);
         assert_eq!(idx.get_position("v1"), None);
+    }
+
+    #[test]
+    fn test_clear() {
+        let idx = SpatialIndex::new();
+        idx.update(&Event::now("v1", 0.0, 0.0));
+        idx.update(&Event::now("v2", 1.0, 1.0));
+
+        idx.clear();
+
+        assert_eq!(idx.len(), 0);
+        assert!(idx.is_empty());
+        assert_eq!(idx.get_position("v1"), None);
+        assert!(idx.query_bbox(-10.0, -10.0, 10.0, 10.0).is_empty());
+
+        // the cleared index still takes new entities
+        idx.update(&Event::now("v3", 2.0, 2.0));
+        assert_eq!(idx.query_bbox(-10.0, -10.0, 10.0, 10.0), vec!["v3"]);
     }
 }

@@ -21,6 +21,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- 2026-08-21: proximity looks up neighbours in the R-tree spatial index over a
+  bounding box sized from the threshold, instead of scanning every known position.
 - 2026-08-16: file sink writes each event as one flushed jsonl line.
 - 2026-08-15: docs badge is 187 tests.
 - Trajectory emits a `stop` alert when an entity stays below 1 m/s for 30 s,
@@ -32,6 +34,10 @@ All notable changes to this project will be documented in this file.
   instead of being silently ignored. Neither has a runner to attach to.
 - `PipelineConfig::metrics` is now `Option<MetricsConfig>`, so an absent section no
   longer reads as an enabled metrics endpoint.
+
+### Removed
+
+- 2026-08-21: `fluvius_core::temporal_join`. No pipeline or topology reached it.
 
 ## [0.1.0] - 2026-05-30
 
