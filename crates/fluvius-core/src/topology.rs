@@ -214,7 +214,17 @@ pub enum SourceConfig {
         group_id: Option<String>,
     },
     #[serde(rename = "mqtt")]
-    Mqtt { broker_url: String, topic: String },
+    Mqtt {
+        broker_url: String,
+        topic: String,
+        username: Option<String>,
+        /// Name of an environment variable holding the password. The password itself
+        /// never appears in the topology file.
+        password_env: Option<String>,
+        /// 0, 1 or 2.
+        qos: Option<u8>,
+        client_id: Option<String>,
+    },
 }
 
 /// Sink configuration.
@@ -228,7 +238,17 @@ pub enum SinkConfig {
     #[serde(rename = "kafka")]
     Kafka { brokers: Vec<String>, topic: String },
     #[serde(rename = "mqtt")]
-    Mqtt { broker_url: String, topic: String },
+    Mqtt {
+        broker_url: String,
+        topic: String,
+        username: Option<String>,
+        /// Name of an environment variable holding the password. The password itself
+        /// never appears in the topology file.
+        password_env: Option<String>,
+        /// 0, 1 or 2.
+        qos: Option<u8>,
+        client_id: Option<String>,
+    },
     #[serde(rename = "stdout")]
     Stdout,
 }
@@ -668,6 +688,97 @@ speed = inf
 
         let err = load_topology(&path).unwrap_err();
         assert!(matches!(err, TopologyError::Parse(_)), "{err:?}");
+    }
+
+    /// MQTT credentials and connection options survive a parse and a re-serialize on
+    /// both the source and the sink.
+    #[test]
+    fn test_mqtt_credentials_roundtrip_through_toml() {
+        let toml = r#"
+[pipeline]
+name = "mqtt-creds"
+
+[pipeline.source]
+type = "mqtt"
+broker_url = "mqtt://localhost:1883"
+topic = "sensors/gps"
+username = "sensor"
+password_env = "FLUVIUS_MQTT_PASSWORD"
+qos = 2
+client_id = "fluvius-source"
+
+[pipeline.sink]
+type = "mqtt"
+broker_url = "mqtt://localhost:1883"
+topic = "alerts"
+username = "alerter"
+password_env = "FLUVIUS_MQTT_SINK_PASSWORD"
+qos = 0
+client_id = "fluvius-sink"
+"#;
+        let original = parse_topology(toml).unwrap();
+        let reparsed = parse_topology(&toml::to_string(&original).unwrap()).unwrap();
+
+        let Some(SourceConfig::Mqtt {
+            username,
+            password_env,
+            qos,
+            client_id,
+            ..
+        }) = &reparsed.pipeline.source
+        else {
+            panic!("expected an mqtt source");
+        };
+        assert_eq!(username.as_deref(), Some("sensor"));
+        assert_eq!(password_env.as_deref(), Some("FLUVIUS_MQTT_PASSWORD"));
+        assert_eq!(*qos, Some(2));
+        assert_eq!(client_id.as_deref(), Some("fluvius-source"));
+
+        let Some(SinkConfig::Mqtt {
+            username,
+            password_env,
+            qos,
+            client_id,
+            ..
+        }) = &reparsed.pipeline.sink
+        else {
+            panic!("expected an mqtt sink");
+        };
+        assert_eq!(username.as_deref(), Some("alerter"));
+        assert_eq!(password_env.as_deref(), Some("FLUVIUS_MQTT_SINK_PASSWORD"));
+        assert_eq!(*qos, Some(0));
+        assert_eq!(client_id.as_deref(), Some("fluvius-sink"));
+    }
+
+    /// The credentials are optional, so an existing broker-only section still parses.
+    #[test]
+    fn test_mqtt_without_credentials_parses() {
+        let config = parse_topology(
+            r#"
+[pipeline]
+name = "bare-mqtt"
+
+[pipeline.sink]
+type = "mqtt"
+broker_url = "mqtt://localhost:1883"
+topic = "alerts"
+"#,
+        )
+        .unwrap();
+        let Some(SinkConfig::Mqtt {
+            username,
+            password_env,
+            qos,
+            client_id,
+            ..
+        }) = &config.pipeline.sink
+        else {
+            panic!("expected an mqtt sink");
+        };
+        assert!(username.is_none());
+        assert!(password_env.is_none());
+        assert!(qos.is_none());
+        assert!(client_id.is_none());
     }
 
     /// A parsed topology round-trips, so a config can be re-serialized without loss.

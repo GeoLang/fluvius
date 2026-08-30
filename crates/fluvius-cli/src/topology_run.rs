@@ -339,6 +339,54 @@ fn compile_condition(condition: &str) -> Result<Predicate, String> {
     }
 }
 
+/// Build a connector config from the topology fields, reading the password out of the
+/// environment variable the topology names.
+#[cfg(feature = "mqtt")]
+fn mqtt_config(
+    broker_url: &str,
+    topic: &str,
+    username: Option<&str>,
+    password_env: Option<&str>,
+    qos: Option<u8>,
+    client_id: Option<&str>,
+) -> Result<fluvius_connectors::mqtt::MqttConfig, String> {
+    use fluvius_connectors::mqtt::{MqttConfig, MqttQos};
+
+    let mut config = MqttConfig::new(broker_url, topic);
+    if let Some(id) = client_id {
+        config.client_id = id.to_string();
+    }
+    if let Some(level) = qos {
+        let level = match level {
+            0 => MqttQos::AtMostOnce,
+            1 => MqttQos::AtLeastOnce,
+            2 => MqttQos::ExactlyOnce,
+            other => return Err(format!("mqtt qos must be 0, 1 or 2, got {other}")),
+        };
+        config = config.with_qos(level);
+    }
+
+    match (username, password_env) {
+        (Some(user), Some(variable)) => {
+            let password = std::env::var(variable).map_err(|_| {
+                format!("mqtt password_env names {variable}, which is not set in the environment")
+            })?;
+            config = config.with_credentials(user, password);
+        }
+        (Some(user), None) => {
+            return Err(format!(
+                "mqtt username {user:?} needs a password_env naming the variable that holds its password"
+            ));
+        }
+        (None, Some(variable)) => {
+            return Err(format!("mqtt password_env {variable:?} needs a username"));
+        }
+        (None, None) => {}
+    }
+
+    Ok(config)
+}
+
 /// Resolve a source config into a receiver fed by a background task.
 fn resolve_source(config: &SourceConfig) -> Result<mpsc::Receiver<Event>, String> {
     match config {
@@ -398,12 +446,26 @@ fn resolve_source(config: &SourceConfig) -> Result<mpsc::Receiver<Event>, String
                 )
             }
         }
-        SourceConfig::Mqtt { broker_url, topic } => {
+        SourceConfig::Mqtt {
+            broker_url,
+            topic,
+            username,
+            password_env,
+            qos,
+            client_id,
+        } => {
             #[cfg(feature = "mqtt")]
             {
-                use fluvius_connectors::mqtt::{MqttConfig, MqttSource};
+                use fluvius_connectors::mqtt::MqttSource;
+                let cfg = mqtt_config(
+                    broker_url,
+                    topic,
+                    username.as_deref(),
+                    password_env.as_deref(),
+                    *qos,
+                    client_id.as_deref(),
+                )?;
                 let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
-                let cfg = MqttConfig::new(broker_url.clone(), topic.clone());
                 tokio::spawn(async move {
                     if let Err(e) = MqttSource::new(cfg).start(tx).await {
                         eprintln!("mqtt source error: {e}");
@@ -413,7 +475,7 @@ fn resolve_source(config: &SourceConfig) -> Result<mpsc::Receiver<Event>, String
             }
             #[cfg(not(feature = "mqtt"))]
             {
-                let _ = (broker_url, topic);
+                let _ = (broker_url, topic, username, password_env, qos, client_id);
                 Err(
                     "topology source type 'mqtt' requires building with --features mqtt"
                         .to_string(),
@@ -480,11 +542,25 @@ fn spawn_sink(
                 )
             }
         }
-        SinkConfig::Mqtt { broker_url, topic } => {
+        SinkConfig::Mqtt {
+            broker_url,
+            topic,
+            username,
+            password_env,
+            qos,
+            client_id,
+        } => {
             #[cfg(feature = "mqtt")]
             {
-                use fluvius_connectors::mqtt::{MqttConfig, MqttSink};
-                let cfg = MqttConfig::new(broker_url.clone(), topic.clone());
+                use fluvius_connectors::mqtt::MqttSink;
+                let cfg = mqtt_config(
+                    broker_url,
+                    topic,
+                    username.as_deref(),
+                    password_env.as_deref(),
+                    *qos,
+                    client_id.as_deref(),
+                )?;
                 let sink = MqttSink::new(cfg).map_err(|e| e.to_string())?;
                 Ok(tokio::spawn(async move {
                     while let Some(event) = rx.recv().await {
@@ -497,7 +573,15 @@ fn spawn_sink(
             }
             #[cfg(not(feature = "mqtt"))]
             {
-                let _ = (broker_url, topic, &mut rx);
+                let _ = (
+                    broker_url,
+                    topic,
+                    username,
+                    password_env,
+                    qos,
+                    client_id,
+                    &mut rx,
+                );
                 Err("topology sink type 'mqtt' requires building with --features mqtt".to_string())
             }
         }
@@ -940,18 +1024,102 @@ topic = "alerts/geofence"
         );
     }
 
+    /// A variable no test sets, so the runner has to report it missing.
+    const UNSET_PASSWORD_VARIABLE: &str = "FLUVIUS_TEST_MQTT_PASSWORD_NEVER_SET";
+
+    fn mqtt_source(username: Option<&str>, password_env: Option<&str>) -> SourceConfig {
+        SourceConfig::Mqtt {
+            broker_url: "mqtt://localhost:1883".into(),
+            topic: "t".into(),
+            username: username.map(String::from),
+            password_env: password_env.map(String::from),
+            qos: None,
+            client_id: None,
+        }
+    }
+
+    fn mqtt_sink(username: Option<&str>, password_env: Option<&str>) -> SinkConfig {
+        SinkConfig::Mqtt {
+            broker_url: "mqtt://localhost:1883".into(),
+            topic: "t".into(),
+            username: username.map(String::from),
+            password_env: password_env.map(String::from),
+            qos: None,
+            client_id: None,
+        }
+    }
+
     #[cfg(not(feature = "mqtt"))]
     #[test]
     fn test_mqtt_source_requires_feature() {
-        let cfg = SourceConfig::Mqtt {
-            broker_url: "mqtt://localhost:1883".into(),
-            topic: "t".into(),
-        };
         assert!(
-            resolve_source(&cfg)
+            resolve_source(&mqtt_source(None, None))
                 .unwrap_err()
                 .contains("--features mqtt")
         );
+    }
+
+    /// The password variable is read when the run starts, so an unset one stops the
+    /// pipeline before any event moves and says which variable to set.
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn test_mqtt_source_fails_naming_an_unset_password_variable() {
+        let err = resolve_source(&mqtt_source(Some("sensor"), Some(UNSET_PASSWORD_VARIABLE)))
+            .err()
+            .unwrap();
+        assert!(err.contains(UNSET_PASSWORD_VARIABLE), "{err}");
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn test_mqtt_sink_fails_naming_an_unset_password_variable() {
+        let (_tx, rx) = mpsc::channel(1);
+        let err = spawn_sink(
+            &mqtt_sink(Some("alerter"), Some(UNSET_PASSWORD_VARIABLE)),
+            rx,
+        )
+        .err()
+        .unwrap();
+        assert!(err.contains(UNSET_PASSWORD_VARIABLE), "{err}");
+    }
+
+    /// Half a credential cannot reach the broker, so it is a config mistake rather
+    /// than a silently dropped username.
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn test_mqtt_rejects_half_a_credential() {
+        let err = resolve_source(&mqtt_source(Some("sensor"), None))
+            .err()
+            .unwrap();
+        assert!(err.contains("password_env"), "{err}");
+
+        let err = resolve_source(&mqtt_source(None, Some(UNSET_PASSWORD_VARIABLE)))
+            .err()
+            .unwrap();
+        assert!(err.contains("username"), "{err}");
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn test_mqtt_config_maps_qos_and_client_id() {
+        use fluvius_connectors::mqtt::MqttQos;
+
+        let config = mqtt_config(
+            "mqtt://localhost:1883",
+            "t",
+            None,
+            None,
+            Some(2),
+            Some("id"),
+        )
+        .expect("qos 2 is exactly once");
+        assert!(matches!(config.qos, MqttQos::ExactlyOnce));
+        assert_eq!(config.client_id, "id");
+
+        let err = mqtt_config("mqtt://localhost:1883", "t", None, None, Some(3), None)
+            .err()
+            .unwrap();
+        assert!(err.contains("qos"), "{err}");
     }
 
     #[cfg(not(feature = "kafka"))]
@@ -974,12 +1142,8 @@ topic = "alerts/geofence"
     #[test]
     fn test_mqtt_sink_requires_feature() {
         let (_tx, rx) = mpsc::channel(1);
-        let cfg = SinkConfig::Mqtt {
-            broker_url: "mqtt://localhost:1883".into(),
-            topic: "t".into(),
-        };
         assert!(
-            spawn_sink(&cfg, rx)
+            spawn_sink(&mqtt_sink(None, None), rx)
                 .err()
                 .unwrap()
                 .contains("--features mqtt")

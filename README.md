@@ -31,7 +31,7 @@ Zero JVM. Single binary (4 MB release build with default features, larger with `
 - **WebSocket** — Source and sink for real-time browser/client integration. Both bind a listener and wait for clients, neither connects out to a remote feed
 - **File** — JSON lines input/output
 - **Kafka** (rdkafka): consumer source and producer sink over JSON events, consumer groups. Build with `--features kafka` (vendored librdkafka via cmake, no system libs needed).
-- **MQTT** (rumqttc): IoT pub/sub source and sink over JSON events. QoS and credentials are configurable from the library API only, a topology declares a broker URL and topic and gets QoS 1 with no credentials. Build with `--features mqtt` (pure Rust).
+- **MQTT** (rumqttc): IoT pub/sub source and sink over JSON events. A topology sets `username`, `qos` (0, 1 or 2) and `client_id` alongside the broker URL and topic, and names the environment variable holding the password in `password_env`. The password is never written in the topology file, and a run stops at startup if the named variable is unset. Build with `--features mqtt` (pure Rust).
 
 ### Operations
 

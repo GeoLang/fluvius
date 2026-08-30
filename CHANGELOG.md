@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- 2026-08-30: MQTT source and sink sections take `username`, `password_env`,
+  `qos` and `client_id`. `password_env` names an environment variable holding the
+  password, and the run fails at startup naming the variable when it is unset.
 - `[pipeline.window]` and `[pipeline.watermark]` drive the runner: tumbling,
   sliding, session or count windows expire stateful operators, and events
   older than `max_lateness_secs` are dropped.
