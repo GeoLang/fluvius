@@ -22,6 +22,28 @@ pub trait StatefulOperator: Send + Sync {
 
     /// Operator name.
     fn name(&self) -> &str;
+
+    /// The state a checkpoint carries. Configuration stays out of it, a restored
+    /// operator is built from the topology and only its accumulated state comes back.
+    fn snapshot(&self) -> serde_json::Value;
+
+    /// Replace the accumulated state with one taken by `snapshot`.
+    fn restore(&mut self, state: serde_json::Value);
+}
+
+/// Read a checkpointed state, keeping what the operator already has when the value
+/// does not fit. A checkpoint written by a different topology is the usual reason.
+pub fn restored<T: serde::de::DeserializeOwned>(
+    operator: &str,
+    state: serde_json::Value,
+) -> Option<T> {
+    match serde_json::from_value(state) {
+        Ok(value) => Some(value),
+        Err(e) => {
+            eprintln!("{operator}: ignoring a checkpoint it cannot read: {e}");
+            None
+        }
+    }
 }
 
 /// A filter operator that passes through events matching a predicate.
@@ -133,6 +155,16 @@ impl StatefulOperator for RateLimiter {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!(self.counts)
+    }
+
+    fn restore(&mut self, state: serde_json::Value) {
+        if let Some(counts) = restored(&self.name, state) {
+            self.counts = counts;
+        }
+    }
 }
 
 /// Token bucket throttle: passes at most `max_per_second` events across the whole
@@ -240,6 +272,34 @@ mod tests {
         // After window close, counts reset
         limiter.on_window_close();
         assert_eq!(limiter.process(&e1).len(), 1); // v1 can send again
+    }
+
+    #[test]
+    fn test_rate_limiter_snapshot_carries_the_counts() {
+        let mut limiter = RateLimiter::new("limiter", 1);
+        assert_eq!(limiter.process(&Event::now("v1", 0.0, 0.0)).len(), 1);
+
+        let mut resumed = RateLimiter::new("limiter", 1);
+        resumed.restore(limiter.snapshot());
+        assert_eq!(
+            resumed.process(&Event::now("v1", 0.0, 0.0)).len(),
+            0,
+            "v1 had already spent its allowance"
+        );
+        assert_eq!(resumed.process(&Event::now("v2", 0.0, 0.0)).len(), 1);
+    }
+
+    #[test]
+    fn test_restore_keeps_the_current_state_when_the_value_does_not_fit() {
+        let mut limiter = RateLimiter::new("limiter", 1);
+        limiter.process(&Event::now("v1", 0.0, 0.0));
+
+        limiter.restore(serde_json::json!("not a count map"));
+        assert_eq!(
+            limiter.process(&Event::now("v1", 0.0, 0.0)).len(),
+            0,
+            "the count survived the unusable checkpoint"
+        );
     }
 
     /// The burst is spent across entities, not per entity, and the events it rejects

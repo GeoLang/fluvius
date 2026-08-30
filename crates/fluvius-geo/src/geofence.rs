@@ -97,6 +97,16 @@ impl StatefulOperator for GeofenceOperator {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!(self.state)
+    }
+
+    fn restore(&mut self, state: serde_json::Value) {
+        if let Some(inside) = fluvius_core::operator::restored(&self.name, state) {
+            self.state = inside;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -262,6 +272,23 @@ mod tests {
 
         // car-2 never moved, so it stays inside and stays quiet
         assert!(op.process(&Event::now("car-2", 6.5, 6.5)).is_empty());
+    }
+
+    /// A restored operator knows which entities were already inside, so the next event
+    /// outside reads as an exit rather than nothing.
+    #[test]
+    fn test_geofence_snapshot_carries_zone_membership() {
+        let mut op = GeofenceOperator::new("geofence");
+        op.add_zone(square_zone("warehouse", 0.0, 0.0, 10.0, 10.0));
+        assert_eq!(op.process(&Event::now("car-1", 5.0, 5.0)).len(), 1);
+
+        let mut resumed = GeofenceOperator::new("geofence");
+        resumed.add_zone(square_zone("warehouse", 0.0, 0.0, 10.0, 10.0));
+        resumed.restore(op.snapshot());
+
+        let out = resumed.process(&Event::now("car-1", 50.0, 50.0));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload["event"], "Exit");
     }
 
     #[test]

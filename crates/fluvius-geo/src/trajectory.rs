@@ -4,16 +4,25 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use fluvius_core::event::{Event, OutputEvent};
-use fluvius_core::operator::StatefulOperator;
+use fluvius_core::operator::{StatefulOperator, restored};
 use geo::Point;
 use geo::algorithm::line_measures::{Distance, Haversine};
+use serde::{Deserialize, Serialize};
 
 /// A trajectory point with timestamp.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryPoint {
     pub lon: f64,
     pub lat: f64,
     pub timestamp: DateTime<Utc>,
+}
+
+/// What a checkpoint carries for one trajectory operator.
+#[derive(Serialize, Deserialize)]
+struct TrajectoryState {
+    trajectories: HashMap<String, Vec<TrajectoryPoint>>,
+    last_moving: HashMap<String, DateTime<Utc>>,
+    stopped: HashMap<String, bool>,
 }
 
 /// Trajectory operator — tracks entity movement, computes statistics, detects anomalies.
@@ -221,6 +230,23 @@ impl StatefulOperator for TrajectoryOperator {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!(TrajectoryState {
+            trajectories: self.trajectories.clone(),
+            last_moving: self.last_moving.clone(),
+            stopped: self.stopped.clone(),
+        })
+    }
+
+    fn restore(&mut self, state: serde_json::Value) {
+        let Some(state): Option<TrajectoryState> = restored(&self.name, state) else {
+            return;
+        };
+        self.trajectories = state.trajectories;
+        self.last_moving = state.last_moving;
+        self.stopped = state.stopped;
     }
 }
 
@@ -519,6 +545,23 @@ mod tests {
             .collect();
         assert!(TrajectoryOperator::smooth_position(&points, 3).is_none());
         assert!(TrajectoryOperator::smooth_position(&[], 1).is_none());
+    }
+
+    /// A restored operator holds the buffered points, so the first event after a
+    /// resume has a previous leg to measure against.
+    #[test]
+    fn test_trajectory_snapshot_carries_the_buffers() {
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        let mut op = TrajectoryOperator::new("traj", 100, 50.0);
+        assert!(op.process(&Event::new("v1", 0.0, 0.0, ts)).is_empty());
+
+        let mut resumed = TrajectoryOperator::new("traj", 100, 50.0);
+        resumed.restore(op.snapshot());
+
+        // 0.1 degrees in one second is far above 50 m/s
+        let out = resumed.process(&Event::new("v1", 0.1, 0.1, ts + Duration::seconds(1)));
+        assert!(out.iter().any(|o| o.payload["alert"] == "speed_anomaly"));
+        assert!(out.iter().any(|o| o.payload["point_count"] == 2));
     }
 
     #[test]

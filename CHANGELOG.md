@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- 2026-08-30: `[pipeline.checkpoint]` makes a run resumable. `StatefulOperator`
+  gained `snapshot` and `restore`, implemented by every stateful operator and by
+  the window assigner, and the runner restores the latest checkpoint before the
+  first event, then writes one every `interval_secs` and when the run ends.
 - 2026-08-30: `[pipeline.metrics]` serves the Prometheus exposition format over
   HTTP for the life of the run. `Pipeline` now updates a shared `Metrics` handle,
   and the section takes a `bind` address in place of `port`.
@@ -40,8 +44,7 @@ All notable changes to this project will be documented in this file.
 - `map_match` is a topology operator: snap each event onto configured road
   segments and forward the snapped coordinates.
 
-- `[pipeline.checkpoint]` fails the run with an explanation instead of being
-  silently ignored. It has no runner to attach to.
+- 2026-08-30: docs badge is 208 tests.
 - `PipelineConfig::metrics` is now `Option<MetricsConfig>`, so an absent section no
   longer reads as an enabled metrics endpoint.
 

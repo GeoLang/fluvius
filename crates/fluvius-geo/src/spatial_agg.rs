@@ -6,7 +6,7 @@ use fluvius_core::event::{Event, OutputEvent};
 use fluvius_core::operator::StatefulOperator;
 
 /// A grid cell identifier.
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CellId {
     pub col: i64,
     pub row: i64,
@@ -63,7 +63,7 @@ pub enum AggregateFunction {
 }
 
 /// A cell's accumulated state.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct CellState {
     count: u64,
     sum: f64,
@@ -193,6 +193,20 @@ impl StatefulOperator for SpatialAggregator {
     fn name(&self) -> &str {
         &self.name
     }
+
+    /// A list of pairs, not a map: a `CellId` is not a JSON object key.
+    fn snapshot(&self) -> serde_json::Value {
+        let cells: Vec<(&CellId, &CellState)> = self.cells.iter().collect();
+        serde_json::json!(cells)
+    }
+
+    fn restore(&mut self, state: serde_json::Value) {
+        let restored: Option<Vec<(CellId, CellState)>> =
+            fluvius_core::operator::restored(&self.name, state);
+        if let Some(cells) = restored {
+            self.cells = cells.into_iter().collect();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +241,34 @@ mod tests {
         let payload = &out.payload;
         assert_eq!(payload["count"], 3);
         assert_eq!(payload["unique_entities"], 3);
+    }
+
+    /// A restored aggregator keeps the partial cell counts, so the threshold is
+    /// reached by the events the first run did not already have.
+    #[test]
+    fn test_aggregator_snapshot_carries_the_cells() {
+        let mut agg = SpatialAggregator::new(
+            "density",
+            GridConfig::uniform(1.0),
+            AggregateFunction::Count,
+            None,
+            3,
+        );
+        assert!(agg.process(&Event::now("v1", 10.0, 20.0)).is_none());
+        assert!(agg.process(&Event::now("v2", 10.1, 20.1)).is_none());
+
+        let mut resumed = SpatialAggregator::new(
+            "density",
+            GridConfig::uniform(1.0),
+            AggregateFunction::Count,
+            None,
+            3,
+        );
+        StatefulOperator::restore(&mut resumed, StatefulOperator::snapshot(&agg));
+
+        let out = SpatialAggregator::process(&mut resumed, &Event::now("v3", 10.2, 20.2)).unwrap();
+        assert_eq!(out.payload["count"], 3);
+        assert_eq!(out.payload["unique_entities"], 3);
     }
 
     #[test]

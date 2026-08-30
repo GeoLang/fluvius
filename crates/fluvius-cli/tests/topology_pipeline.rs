@@ -366,32 +366,6 @@ path = "{}"
     assert_eq!(ids, vec!["truck-1", "truck-3"]);
 }
 
-#[tokio::test]
-async fn topology_rejects_configured_checkpointing() {
-    let config = parse_topology(
-        r#"
-[pipeline]
-name = "wants-checkpoints"
-
-[pipeline.checkpoint]
-dir = "/tmp/fluvius-checkpoints"
-
-[pipeline.source]
-type = "file"
-path = "in.jsonl"
-
-[pipeline.sink]
-type = "stdout"
-"#,
-    )
-    .unwrap();
-    let err = topology_run::run_topology(config).await.unwrap_err();
-    assert!(
-        err.contains("[pipeline.checkpoint]") && err.contains("not supported"),
-        "{err}"
-    );
-}
-
 /// A missing input file leaves the run empty rather than panicking.
 #[tokio::test]
 async fn topology_with_an_unreadable_source_produces_no_output() {

@@ -28,7 +28,7 @@ Zero JVM. Single binary (4 MB release build with default features, larger with `
 
 ### Connectors
 
-- **WebSocket** — A source url with a `ws://` or `wss://` scheme is a remote feed the runner connects to, retrying with a doubling delay up to 30 s when the feed drops or refuses. A source given as `host:port`, and every sink, binds a listener and waits for clients instead. `wss://` needs `--features tls`
+- **WebSocket**: a source url with a `ws://` or `wss://` scheme is a remote feed the runner connects to, retrying with a doubling delay up to 30 s when the feed drops or refuses. A source given as `host:port`, and every sink, binds a listener and waits for clients instead. `wss://` needs `--features tls`
 - **File** — JSON lines input/output
 - **Kafka** (rdkafka): consumer source and producer sink over JSON events, consumer groups. Build with `--features kafka` (vendored librdkafka via cmake, no system libs needed).
 - **MQTT** (rumqttc): IoT pub/sub source and sink over JSON events. A topology sets `username`, `qos` (0, 1 or 2) and `client_id` alongside the broker URL and topic, and names the environment variable holding the password in `password_env`. The password is never written in the topology file, and a run stops at startup if the named variable is unset. Build with `--features mqtt` (pure Rust).
@@ -37,8 +37,8 @@ Zero JVM. Single binary (4 MB release build with default features, larger with `
 
 - **Replay mode** — Replay historical data at 1x, 10x, 100x, or max speed, from a topology or the library
 - **Topology DSL (TOML)** — Declare full pipelines without writing code
-- **Checkpointing** (library only): `fluvius_core::checkpoint` snapshots a `StateStore` with automatic GC. The topology runner keeps no state store, so it cannot checkpoint a pipeline
-- **Prometheus metrics** — `[pipeline.metrics]` serves the exposition format over HTTP for the life of the run: events received, emitted, filtered and late, plus average operator time per event
+- **Checkpointing**: `[pipeline.checkpoint]` restores every operator's state at startup and snapshots it on an interval and when the run ends, keeping the last `max_retained` snapshots
+- **Prometheus metrics**: `[pipeline.metrics]` serves the exposition format over HTTP for the life of the run: events received, emitted, filtered and late, plus average operator time per event
 
 ## Quick Start
 
@@ -138,7 +138,16 @@ bind = "127.0.0.1:9090"
 path = "/metrics"
 ```
 
-`[pipeline.checkpoint]` parses, but the runner cannot act on it and fails with an error saying so rather than ignoring the section. Checkpointing needs the operators to keep their state in a `StateStore`, which does not exist.
+`[pipeline.checkpoint]` makes a run resumable. At startup the latest snapshot in `dir` is loaded into every stage, keyed by the operator name, and a new one is written every `interval_secs` and once when the run ends. The state is what an operator accumulated, so a resumed geofence knows which entities were already inside a zone and a resumed proximity operator knows where everything was:
+
+```toml
+[pipeline.checkpoint]
+dir = "/var/lib/fluvius/checkpoints"
+interval_secs = 30
+max_retained = 3
+```
+
+Two stateful operators cannot share a name in a checkpointing topology, since the name is the key. The snapshot holds accumulated state only, never configuration, so the topology file stays the one place zones, thresholds and patterns are defined.
 
 `serve` runs the same wiring against live WebSocket endpoints, replacing whatever source and sink the topology declares:
 
@@ -180,11 +189,10 @@ The `geofence`, `proximity` and `trajectory` subcommands run a single operator o
 | Single binary | ✓ | ✗ | ✗ | ✗ |
 | TOML topology DSL | ✓ | ✗ | ✗ | ✗ |
 | Map matching | ✓ | ✗ | ✗ | ✗ |
-| Checkpointing | lib | ✓ | ✓ | ✓ |
+| Checkpointing | ✓ | ✓ | ✓ | ✓ |
 | Prometheus metrics | ✓ | ✓ | ✓ | ✗ |
 | Open source | ✓ | ✓ | ✓ | ✗ |
 
-`lib` means the crate ships the API but a running pipeline does not use it.
 
 ## License
 

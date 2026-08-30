@@ -106,6 +106,16 @@ impl StatefulOperator for ProximityOperator {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!(self.index.positions())
+    }
+
+    fn restore(&mut self, state: serde_json::Value) {
+        if let Some(positions) = fluvius_core::operator::restored(&self.name, state) {
+            self.index.replace(positions);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -257,6 +267,21 @@ mod tests {
         let mut quiet = ProximityOperator::new("proximity", 500.0);
         quiet.process(&Event::now("v1", 10.0, 60.0));
         assert!(quiet.process(&Event::now("v2", 10.01, 60.0)).is_empty());
+    }
+
+    /// A restored operator queries the positions the snapshot carried, so a neighbour
+    /// it never saw arrive still triggers an alert.
+    #[test]
+    fn test_proximity_snapshot_carries_positions() {
+        let mut op = ProximityOperator::new("proximity", 1000.0);
+        op.process(&Event::now("v1", 0.0, 0.0));
+
+        let mut resumed = ProximityOperator::new("proximity", 1000.0);
+        resumed.restore(op.snapshot());
+
+        let out = resumed.process(&Event::now("v2", 0.001, 0.0));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload["entity_b"], "v1");
     }
 
     #[test]

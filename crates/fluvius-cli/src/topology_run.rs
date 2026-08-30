@@ -11,13 +11,15 @@ use std::time::Duration;
 
 use fluvius_connectors::file;
 use fluvius_core::cep::{CepEngine, Pattern, PatternStep};
+use fluvius_core::checkpoint::CheckpointManager;
 use fluvius_core::event::{Event, OutputEvent};
 use fluvius_core::metrics::{Metrics, serve_metrics};
 use fluvius_core::operator::{FilterOperator, RateLimitOperator};
 use fluvius_core::pipeline::{Pipeline, Stage};
 use fluvius_core::replay::{ReplaySpeed, Replayer};
+use fluvius_core::state::StateStore;
 use fluvius_core::topology::{
-    MetricsConfig, OperatorConfig, PatternConfig, PipelineConfig, ReplayConfig, SinkConfig,
+    CheckpointConfig, MetricsConfig, OperatorConfig, PatternConfig, ReplayConfig, SinkConfig,
     SourceConfig, TopologyConfig, ZoneConfig,
 };
 use fluvius_geo::geofence::{GeofenceOperator, GeofenceZone};
@@ -62,7 +64,6 @@ pub async fn serve(
 /// Run a topology to completion.
 pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
     let pipeline_cfg = config.pipeline;
-    reject_unsupported_sections(&pipeline_cfg)?;
 
     let sink_cfg = pipeline_cfg
         .sink
@@ -78,6 +79,9 @@ pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
             .as_ref()
             .map_or(0, |w| w.max_lateness_secs);
         pipeline.set_window_lateness_secs(window.strategy()?, lateness);
+    }
+    if let Some(checkpoint) = &pipeline_cfg.checkpoint {
+        enable_checkpoints(checkpoint, &mut pipeline)?;
     }
 
     let rx_in = match &pipeline_cfg.replay {
@@ -117,18 +121,24 @@ pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Reject the sections the runner cannot honour. The section parses so a config can
-/// carry it, but checkpointing would need operator state in a store, which does not
-/// exist.
-fn reject_unsupported_sections(config: &PipelineConfig) -> Result<(), String> {
-    if config.checkpoint.is_some() {
-        return Err(
-            "[pipeline.checkpoint] is configured but not supported: the runner keeps no state \
-             store to snapshot, fluvius_core::checkpoint is a library API. Remove the section"
-                .to_string(),
+/// Restore the latest checkpoint into every stage and arm the periodic writes.
+fn enable_checkpoints(config: &CheckpointConfig, pipeline: &mut Pipeline) -> Result<(), String> {
+    let manager = CheckpointManager::new(&config.dir, config.max_retained)
+        .map_err(|e| format!("cannot open the checkpoint directory {}: {e}", config.dir))?;
+
+    let store = StateStore::new();
+    let restored = manager
+        .restore_latest(&store)
+        .map_err(|e| format!("cannot read a checkpoint from {}: {e}", config.dir))?;
+    if let Some(checkpoint) = restored {
+        pipeline.restore_from(&store);
+        println!(
+            "  Restored checkpoint {} from {}",
+            checkpoint.id, config.dir
         );
     }
-    Ok(())
+
+    pipeline.set_checkpoints(manager, Duration::from_secs(config.interval_secs))
 }
 
 /// Serve the pipeline counters for the life of the run when the topology asks for it.
@@ -996,23 +1006,43 @@ topic = "alerts/geofence"
         assert!(build_stage(&cfg).err().unwrap().contains("altitude"));
     }
 
+    /// State is keyed by stage name, so a topology that reuses one cannot checkpoint.
     #[test]
-    fn test_reject_unsupported_sections() {
-        let with_checkpoint = parse_topology(
-            "[pipeline]\nname = \"p\"\n\n[pipeline.checkpoint]\ndir = \"/tmp/cp\"\n",
-        )
-        .unwrap()
-        .pipeline;
-        let err = reject_unsupported_sections(&with_checkpoint).err().unwrap();
-        assert!(
-            err.contains("[pipeline.checkpoint]") && err.contains("not supported"),
-            "{err}"
-        );
+    fn test_checkpointing_rejects_two_stages_sharing_a_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CheckpointConfig {
+            dir: dir.path().display().to_string(),
+            interval_secs: 60,
+            max_retained: 3,
+        };
 
-        let absent = parse_topology("[pipeline]\nname = \"p\"\n")
-            .unwrap()
-            .pipeline;
-        assert!(reject_unsupported_sections(&absent).is_ok());
+        let mut pipeline = Pipeline::new("clashing");
+        for _ in 0..2 {
+            pipeline.add_stage(
+                build_stage(&OperatorConfig::Proximity {
+                    name: "near".into(),
+                    radius_m: 100.0,
+                })
+                .unwrap(),
+            );
+        }
+
+        let err = enable_checkpoints(&config, &mut pipeline).err().unwrap();
+        assert!(err.contains("near"), "{err}");
+    }
+
+    #[test]
+    fn test_checkpointing_reports_a_directory_it_cannot_open() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let config = CheckpointConfig {
+            dir: file.path().display().to_string(),
+            interval_secs: 60,
+            max_retained: 3,
+        };
+
+        let mut pipeline = Pipeline::new("bad-dir");
+        let err = enable_checkpoints(&config, &mut pipeline).err().unwrap();
+        assert!(err.contains("checkpoint directory"), "{err}");
     }
 
     /// A metrics section turned off explicitly binds nothing.

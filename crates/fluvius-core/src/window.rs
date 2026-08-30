@@ -20,7 +20,7 @@ pub enum WindowStrategy {
 }
 
 /// A window instance holding accumulated events.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Window {
     /// Window start time.
     pub start: DateTime<Utc>,
@@ -211,6 +211,18 @@ impl WindowManager {
     pub fn windows(&self) -> &[Window] {
         &self.windows
     }
+
+    /// The windows still open, so a checkpoint can carry the events they hold. The
+    /// strategy is left out, it comes from the topology rather than the checkpoint.
+    pub fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!(self.windows)
+    }
+
+    pub fn restore(&mut self, state: serde_json::Value) {
+        if let Some(windows) = crate::operator::restored("windows", state) {
+            self.windows = windows;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -342,6 +354,24 @@ mod tests {
         assert!(expired.is_empty());
         assert_eq!(mgr.windows().len(), 1);
         assert_eq!(mgr.windows()[0].count(), 2);
+    }
+
+    /// A restored manager holds the events the open windows had accumulated, so a
+    /// count window fills at the size it was already partway to.
+    #[test]
+    fn test_window_snapshot_carries_open_windows() {
+        let mut mgr = WindowManager::new(WindowStrategy::Count { size: 3 });
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        mgr.assign(Event::new("e0", 0.0, 0.0, ts));
+        mgr.assign(Event::new("e1", 1.0, 0.0, ts + Duration::seconds(1)));
+
+        let mut resumed = WindowManager::new(WindowStrategy::Count { size: 3 });
+        resumed.restore(mgr.snapshot());
+        assert_eq!(resumed.windows().len(), 1);
+        assert_eq!(resumed.windows()[0].count(), 2);
+
+        resumed.assign(Event::new("e2", 2.0, 0.0, ts + Duration::seconds(2)));
+        assert_eq!(resumed.expire(&ts).len(), 1);
     }
 
     #[test]

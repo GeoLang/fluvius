@@ -116,6 +116,24 @@ impl SpatialIndex {
         }
     }
 
+    /// Every entity's current position.
+    pub fn positions(&self) -> HashMap<String, [f64; 2]> {
+        let inner = self.inner.read().unwrap();
+        inner.positions.clone()
+    }
+
+    /// Drop what is indexed and rebuild it from the given positions.
+    pub fn replace(&self, positions: HashMap<String, [f64; 2]>) {
+        let mut inner = self.inner.write().unwrap();
+        inner.tree = RTree::bulk_load(
+            positions
+                .iter()
+                .map(|(entity_id, position)| SpatialEntry::new(*position, entity_id.clone()))
+                .collect(),
+        );
+        inner.positions = positions;
+    }
+
     /// Drop every indexed entity.
     pub fn clear(&self) {
         let mut inner = self.inner.write().unwrap();

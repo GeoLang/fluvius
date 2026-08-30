@@ -28,6 +28,7 @@ pub struct Pattern {
 }
 
 /// Tracks in-progress pattern matches per entity.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct MatchState {
     /// Index of next step to match.
     current_step: usize,
@@ -159,6 +160,16 @@ impl StatefulOperator for CepEngine {
     fn name(&self) -> &str {
         "cep"
     }
+
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!(self.state)
+    }
+
+    fn restore(&mut self, state: serde_json::Value) {
+        if let Some(partial_matches) = crate::operator::restored("cep", state) {
+            self.state = partial_matches;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -263,5 +274,45 @@ mod tests {
         // Close enough
         let e2 = Event::now("v1", 10.1, 20.1);
         assert_eq!(engine.process(&e2).len(), 1);
+    }
+
+    fn stop_then_move() -> Pattern {
+        Pattern {
+            name: "stop_then_move".to_string(),
+            steps: vec![
+                PatternStep {
+                    name: "stop".to_string(),
+                    condition: Box::new(|e: &Event| e.speed.unwrap_or(0.0) < 1.0),
+                    near: None,
+                },
+                PatternStep {
+                    name: "move".to_string(),
+                    condition: Box::new(|e: &Event| e.speed.unwrap_or(0.0) > 5.0),
+                    near: None,
+                },
+            ],
+            within: Duration::from_secs(60),
+        }
+    }
+
+    /// A restored engine holds the half-finished match, so the step that completes the
+    /// pattern still completes it.
+    #[test]
+    fn test_cep_snapshot_carries_partial_matches() {
+        let mut engine = CepEngine::new();
+        engine.add_pattern(stop_then_move());
+        assert!(
+            engine
+                .process(&Event::now("v1", 0.0, 0.0).with_speed(0.0))
+                .is_empty()
+        );
+
+        let mut resumed = CepEngine::new();
+        resumed.add_pattern(stop_then_move());
+        resumed.restore(StatefulOperator::snapshot(&engine));
+
+        let matches = resumed.process(&Event::now("v1", 0.0, 0.0).with_speed(10.0));
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].payload["pattern"], "stop_then_move");
     }
 }
