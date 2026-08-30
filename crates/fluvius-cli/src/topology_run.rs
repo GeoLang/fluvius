@@ -12,12 +12,13 @@ use std::time::Duration;
 use fluvius_connectors::file;
 use fluvius_core::cep::{CepEngine, Pattern, PatternStep};
 use fluvius_core::event::{Event, OutputEvent};
+use fluvius_core::metrics::{Metrics, serve_metrics};
 use fluvius_core::operator::{FilterOperator, RateLimitOperator};
 use fluvius_core::pipeline::{Pipeline, Stage};
 use fluvius_core::replay::{ReplaySpeed, Replayer};
 use fluvius_core::topology::{
-    OperatorConfig, PatternConfig, PipelineConfig, ReplayConfig, SinkConfig, SourceConfig,
-    TopologyConfig, ZoneConfig,
+    MetricsConfig, OperatorConfig, PatternConfig, PipelineConfig, ReplayConfig, SinkConfig,
+    SourceConfig, TopologyConfig, ZoneConfig,
 };
 use fluvius_geo::geofence::{GeofenceOperator, GeofenceZone};
 use fluvius_geo::map_match::{MapMatchOperator, RoadNetwork, RoadSegment};
@@ -98,32 +99,28 @@ pub async fn run_topology(config: TopologyConfig) -> Result<(), String> {
     };
     let (tx_out, rx_out) = mpsc::channel(CHANNEL_CAPACITY);
     let sink_handle = spawn_sink(&sink_cfg, rx_out)?;
+    let metrics_handle = spawn_metrics_endpoint(&pipeline_cfg.metrics, pipeline.metrics()).await?;
 
     let metrics = pipeline.run(rx_in, tx_out).await;
     // pipeline.run returns once the source channel closes, dropping tx_out, which
     // closes the sink channel and lets the sink task finish.
     let _ = sink_handle.await;
+    if let Some(handle) = metrics_handle {
+        handle.abort();
+    }
 
     println!("Topology complete:");
-    println!("  Events received: {}", metrics.events_received);
-    println!("  Events emitted: {}", metrics.events_emitted);
-    println!("  Events filtered: {}", metrics.events_filtered);
-    println!("  Events late: {}", metrics.events_late);
+    println!("  Events received: {}", metrics.events_received());
+    println!("  Events emitted: {}", metrics.events_emitted());
+    println!("  Events filtered: {}", metrics.events_filtered());
+    println!("  Events late: {}", metrics.events_late());
     Ok(())
 }
 
-/// Reject the sections the runner cannot honour. Both parse so a config can carry
-/// them, but serving metrics would need a collector threaded through every stage and
-/// checkpointing would need operator state in a store, neither of which exists.
+/// Reject the sections the runner cannot honour. The section parses so a config can
+/// carry it, but checkpointing would need operator state in a store, which does not
+/// exist.
 fn reject_unsupported_sections(config: &PipelineConfig) -> Result<(), String> {
-    if config.metrics.as_ref().is_some_and(|m| m.enabled) {
-        return Err(
-            "[pipeline.metrics] is configured but not supported: the runner serves no metrics \
-             endpoint, fluvius_core::metrics is a library API. Remove the section or set \
-             enabled = false"
-                .to_string(),
-        );
-    }
     if config.checkpoint.is_some() {
         return Err(
             "[pipeline.checkpoint] is configured but not supported: the runner keeps no state \
@@ -132,6 +129,27 @@ fn reject_unsupported_sections(config: &PipelineConfig) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Serve the pipeline counters for the life of the run when the topology asks for it.
+async fn spawn_metrics_endpoint(
+    config: &Option<MetricsConfig>,
+    metrics: Metrics,
+) -> Result<Option<tokio::task::JoinHandle<()>>, String> {
+    let Some(config) = config.as_ref().filter(|c| c.enabled) else {
+        return Ok(None);
+    };
+
+    let handle = serve_metrics(&config.bind, &config.path, metrics)
+        .await
+        .map_err(|e| {
+            format!(
+                "cannot serve [pipeline.metrics] on {}{}: {e}",
+                config.bind, config.path
+            )
+        })?;
+    println!("  Metrics: http://{}{}", config.bind, config.path);
+    Ok(Some(handle))
 }
 
 /// Feed the pipeline from a recorded file, paced by the event timestamps.
@@ -980,17 +998,6 @@ topic = "alerts/geofence"
 
     #[test]
     fn test_reject_unsupported_sections() {
-        let with_metrics = parse_topology(
-            "[pipeline]\nname = \"p\"\n\n[pipeline.metrics]\nenabled = true\nport = 9090\n",
-        )
-        .unwrap()
-        .pipeline;
-        let err = reject_unsupported_sections(&with_metrics).err().unwrap();
-        assert!(
-            err.contains("[pipeline.metrics]") && err.contains("not supported"),
-            "{err}"
-        );
-
         let with_checkpoint = parse_topology(
             "[pipeline]\nname = \"p\"\n\n[pipeline.checkpoint]\ndir = \"/tmp/cp\"\n",
         )
@@ -1001,22 +1008,50 @@ topic = "alerts/geofence"
             err.contains("[pipeline.checkpoint]") && err.contains("not supported"),
             "{err}"
         );
-    }
-
-    /// Metrics turned off explicitly is a statement of intent, not a request for
-    /// something missing.
-    #[test]
-    fn test_disabled_metrics_section_is_accepted() {
-        let disabled =
-            parse_topology("[pipeline]\nname = \"p\"\n\n[pipeline.metrics]\nenabled = false\n")
-                .unwrap()
-                .pipeline;
-        assert!(reject_unsupported_sections(&disabled).is_ok());
 
         let absent = parse_topology("[pipeline]\nname = \"p\"\n")
             .unwrap()
             .pipeline;
         assert!(reject_unsupported_sections(&absent).is_ok());
+    }
+
+    /// A metrics section turned off explicitly binds nothing.
+    #[tokio::test]
+    async fn test_a_disabled_metrics_section_serves_nothing() {
+        let disabled =
+            parse_topology("[pipeline]\nname = \"p\"\n\n[pipeline.metrics]\nenabled = false\n")
+                .unwrap()
+                .pipeline;
+        let handle = spawn_metrics_endpoint(&disabled.metrics, Metrics::new())
+            .await
+            .unwrap();
+        assert!(handle.is_none());
+
+        let absent = parse_topology("[pipeline]\nname = \"p\"\n")
+            .unwrap()
+            .pipeline;
+        assert!(
+            spawn_metrics_endpoint(&absent.metrics, Metrics::new())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// An address the endpoint cannot take stops the run rather than starting one
+    /// with no way to observe it.
+    #[tokio::test]
+    async fn test_an_unbindable_metrics_address_fails_the_run() {
+        let config = Some(MetricsConfig {
+            enabled: true,
+            bind: "203.0.113.1:9090".to_string(),
+            path: "/metrics".to_string(),
+        });
+        let err = spawn_metrics_endpoint(&config, Metrics::new())
+            .await
+            .err()
+            .unwrap();
+        assert!(err.contains("[pipeline.metrics]"), "{err}");
     }
 
     #[test]

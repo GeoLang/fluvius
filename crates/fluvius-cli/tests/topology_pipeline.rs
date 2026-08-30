@@ -367,33 +367,6 @@ path = "{}"
 }
 
 #[tokio::test]
-async fn topology_rejects_a_configured_metrics_endpoint() {
-    let config = parse_topology(
-        r#"
-[pipeline]
-name = "wants-metrics"
-
-[pipeline.metrics]
-enabled = true
-port = 9090
-
-[pipeline.source]
-type = "file"
-path = "in.jsonl"
-
-[pipeline.sink]
-type = "stdout"
-"#,
-    )
-    .unwrap();
-    let err = topology_run::run_topology(config).await.unwrap_err();
-    assert!(
-        err.contains("[pipeline.metrics]") && err.contains("not supported"),
-        "{err}"
-    );
-}
-
-#[tokio::test]
 async fn topology_rejects_configured_checkpointing() {
     let config = parse_topology(
         r#"

@@ -182,9 +182,9 @@ async fn cmd_run_file(input: &std::path::Path, output: &std::path::Path, min_spe
     let output_count = collect_handle.await.unwrap();
 
     println!("Pipeline complete:");
-    println!("  Events received: {}", metrics.events_received);
-    println!("  Events emitted: {}", metrics.events_emitted);
-    println!("  Events filtered: {}", metrics.events_filtered);
+    println!("  Events received: {}", metrics.events_received());
+    println!("  Events emitted: {}", metrics.events_emitted());
+    println!("  Events filtered: {}", metrics.events_filtered());
     println!("  Outputs written: {output_count}");
 }
 

@@ -258,8 +258,9 @@ pub enum SinkConfig {
 pub struct MetricsConfig {
     #[serde(default = "default_metrics_enabled")]
     pub enabled: bool,
-    #[serde(default = "default_metrics_port")]
-    pub port: u16,
+    /// `host:port` the exposition endpoint listens on.
+    #[serde(default = "default_metrics_bind")]
+    pub bind: String,
     #[serde(default = "default_metrics_path")]
     pub path: String,
 }
@@ -267,8 +268,8 @@ pub struct MetricsConfig {
 fn default_metrics_enabled() -> bool {
     true
 }
-fn default_metrics_port() -> u16 {
-    9090
+fn default_metrics_bind() -> String {
+    "127.0.0.1:9090".to_string()
 }
 fn default_metrics_path() -> String {
     "/metrics".to_string()
@@ -278,7 +279,7 @@ impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
             enabled: default_metrics_enabled(),
-            port: default_metrics_port(),
+            bind: default_metrics_bind(),
             path: default_metrics_path(),
         }
     }
@@ -461,7 +462,7 @@ topic = "alerts/geofence"
 
 [pipeline.metrics]
 enabled = true
-port = 9090
+bind = "127.0.0.1:9090"
 path = "/metrics"
 
 [pipeline.checkpoint]
@@ -478,7 +479,7 @@ speed = 10.0
         assert_eq!(config.pipeline.operators.len(), 3);
         assert!(config.pipeline.checkpoint.is_some());
         assert!(config.pipeline.replay.is_some());
-        assert_eq!(config.pipeline.metrics.unwrap().port, 9090);
+        assert_eq!(config.pipeline.metrics.unwrap().bind, "127.0.0.1:9090");
     }
 
     /// A pipeline is legal with no operators and no endpoints; the runner is what
@@ -638,7 +639,7 @@ file = "history.jsonl"
         .unwrap();
         let metrics = config.pipeline.metrics.unwrap();
         assert!(metrics.enabled);
-        assert_eq!(metrics.port, 9090);
+        assert_eq!(metrics.bind, "127.0.0.1:9090");
         assert_eq!(metrics.path, "/metrics");
         let checkpoint = config.pipeline.checkpoint.unwrap();
         assert_eq!(checkpoint.interval_secs, 60);

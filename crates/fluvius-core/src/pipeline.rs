@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::event::{Event, OutputEvent};
+use crate::metrics::Metrics;
 use crate::operator::{MapOperator, StatefulOperator};
 use crate::watermark::Watermark;
 use crate::window::{WindowManager, WindowStrategy};
@@ -25,16 +26,7 @@ pub struct Pipeline {
     stages: Vec<Stage>,
     windows: Option<WindowManager>,
     watermark: Option<Watermark>,
-}
-
-/// Pipeline execution metrics.
-#[derive(Debug, Clone, Default)]
-pub struct PipelineMetrics {
-    pub events_received: u64,
-    pub events_emitted: u64,
-    pub events_filtered: u64,
-    /// dropped because they arrived after the watermark plus max lateness
-    pub events_late: u64,
+    metrics: Metrics,
 }
 
 impl Pipeline {
@@ -44,7 +36,14 @@ impl Pipeline {
             stages: Vec::new(),
             windows: None,
             watermark: None,
+            metrics: Metrics::new(),
         }
+    }
+
+    /// The counters this pipeline updates as it runs. The handle is shared, so a
+    /// metrics endpoint holding one sees the counts move.
+    pub fn metrics(&self) -> Metrics {
+        self.metrics.clone()
     }
 
     /// Expire stateful stages when a tumbling (or other) window closes, using
@@ -79,60 +78,69 @@ impl Pipeline {
         &mut self,
         mut input: mpsc::Receiver<Event>,
         output: mpsc::Sender<OutputEvent>,
-    ) -> PipelineMetrics {
-        let mut metrics = PipelineMetrics::default();
+    ) -> Metrics {
+        let metrics = self.metrics.clone();
 
         while let Some(event) = input.recv().await {
-            metrics.events_received += 1;
+            metrics.inc_received();
 
             if let Some(wm) = &mut self.watermark
                 && !wm.advance(&event.timestamp)
             {
-                metrics.events_late += 1;
+                metrics.inc_late();
                 continue;
             }
             if let (Some(wm), Some(windows)) = (&self.watermark, &mut self.windows) {
                 for _expired in windows.expire(wm.current()) {
-                    if !flush_stateful(&mut self.stages, &output, &mut metrics).await {
+                    if !flush_stateful(&mut self.stages, &output, &metrics).await {
                         return metrics;
                     }
                 }
             }
 
             let mut current = event;
+            let mut processing_time = std::time::Duration::ZERO;
 
             for stage in &mut self.stages {
+                let started = std::time::Instant::now();
                 match stage {
-                    Stage::Map(op) => match op.process(&current) {
-                        Some(out) => {
-                            current = out.source_event.clone();
-                            if output.send(out).await.is_err() {
-                                return metrics;
+                    Stage::Map(op) => {
+                        let produced = op.process(&current);
+                        processing_time += started.elapsed();
+                        match produced {
+                            Some(out) => {
+                                current = out.source_event.clone();
+                                if output.send(out).await.is_err() {
+                                    return metrics;
+                                }
+                                metrics.inc_emitted();
                             }
-                            metrics.events_emitted += 1;
+                            None => {
+                                metrics.inc_filtered();
+                                break;
+                            }
                         }
-                        None => {
-                            metrics.events_filtered += 1;
-                            break;
-                        }
-                    },
+                    }
                     Stage::Stateful(op) => {
-                        for out in op.process(&current) {
+                        let produced = op.process(&current);
+                        processing_time += started.elapsed();
+                        for out in produced {
                             if output.send(out).await.is_err() {
                                 return metrics;
                             }
-                            metrics.events_emitted += 1;
+                            metrics.inc_emitted();
                         }
                     }
                 }
             }
+            metrics.record_processing_time(processing_time.as_micros() as u64);
 
             if let Some(windows) = &mut self.windows {
                 windows.assign(current);
             }
         }
 
-        let _ = flush_stateful(&mut self.stages, &output, &mut metrics).await;
+        let _ = flush_stateful(&mut self.stages, &output, &metrics).await;
         metrics
     }
 }
@@ -141,7 +149,7 @@ impl Pipeline {
 async fn flush_stateful(
     stages: &mut [Stage],
     output: &mpsc::Sender<OutputEvent>,
-    metrics: &mut PipelineMetrics,
+    metrics: &Metrics,
 ) -> bool {
     for stage in stages.iter_mut() {
         if let Stage::Stateful(op) = stage {
@@ -149,7 +157,7 @@ async fn flush_stateful(
                 if output.send(out).await.is_err() {
                     return false;
                 }
-                metrics.events_emitted += 1;
+                metrics.inc_emitted();
             }
         }
     }
@@ -179,8 +187,8 @@ mod tests {
         drop(tx_in);
 
         let metrics = pipeline.run(rx_in, tx_out).await;
-        assert_eq!(metrics.events_received, 2);
-        assert_eq!(metrics.events_emitted, 2);
+        assert_eq!(metrics.events_received(), 2);
+        assert_eq!(metrics.events_emitted(), 2);
 
         let out1 = rx_out.recv().await.unwrap();
         assert_eq!(out1.source_event.entity_id, "v1");
@@ -211,9 +219,9 @@ mod tests {
         drop(tx_in);
 
         let metrics = pipeline.run(rx_in, tx_out).await;
-        assert_eq!(metrics.events_received, 3);
-        assert_eq!(metrics.events_emitted, 2);
-        assert_eq!(metrics.events_filtered, 1);
+        assert_eq!(metrics.events_received(), 3);
+        assert_eq!(metrics.events_emitted(), 2);
+        assert_eq!(metrics.events_filtered(), 1);
 
         let out1 = rx_out.recv().await.unwrap();
         assert_eq!(out1.source_event.entity_id, "v1");
@@ -272,10 +280,10 @@ mod tests {
         drop(tx_in);
 
         let metrics = pipeline.run(rx_in, tx_out).await;
-        assert_eq!(metrics.events_received, 3);
-        assert_eq!(metrics.events_filtered, 1);
+        assert_eq!(metrics.events_received(), 3);
+        assert_eq!(metrics.events_filtered(), 1);
         // 2 filter passes + 2 counter outputs + 1 close summary
-        assert_eq!(metrics.events_emitted, 5);
+        assert_eq!(metrics.events_emitted(), 5);
 
         let mut outputs = Vec::new();
         while let Some(out) = rx_out.recv().await {
@@ -300,7 +308,7 @@ mod tests {
         drop(tx_in);
 
         let metrics = pipeline.run(rx_in, tx_out).await;
-        assert_eq!(metrics.events_filtered, 0);
+        assert_eq!(metrics.events_filtered(), 0);
 
         let mut counted = 0;
         while let Some(out) = rx_out.recv().await {
@@ -325,8 +333,8 @@ mod tests {
         drop(tx_in);
 
         let metrics = pipeline.run(rx_in, tx_out).await;
-        assert_eq!(metrics.events_received, 1);
-        assert_eq!(metrics.events_emitted, 0);
+        assert_eq!(metrics.events_received(), 1);
+        assert_eq!(metrics.events_emitted(), 0);
         assert!(rx_out.recv().await.is_none());
     }
 
@@ -402,8 +410,8 @@ mod tests {
         drop(tx_in);
 
         let metrics = pipeline.run(rx_in, tx_out).await;
-        assert_eq!(metrics.events_emitted, 0);
-        assert_eq!(metrics.events_received, 1, "gave up on the first send");
+        assert_eq!(metrics.events_emitted(), 0);
+        assert_eq!(metrics.events_received(), 1, "gave up on the first send");
     }
 
     /// A stateless stage hands the event it emitted to the next stage, so a
@@ -432,10 +440,11 @@ mod tests {
 
         let metrics = pipeline.run(rx_in, tx_out).await;
         assert_eq!(
-            metrics.events_filtered, 0,
+            metrics.events_filtered(),
+            0,
             "the boost got it past the filter"
         );
-        assert_eq!(metrics.events_emitted, 2);
+        assert_eq!(metrics.events_emitted(), 2);
 
         let boosted = rx_out.recv().await.unwrap();
         assert_eq!(boosted.source_event.speed, Some(101.0));
@@ -525,8 +534,8 @@ mod tests {
         drop(tx_in);
 
         let metrics = pipeline.run(rx_in, tx_out).await;
-        assert_eq!(metrics.events_late, 1);
-        assert_eq!(metrics.events_received, 2);
-        assert_eq!(metrics.events_emitted, 1);
+        assert_eq!(metrics.events_late(), 1);
+        assert_eq!(metrics.events_received(), 2);
+        assert_eq!(metrics.events_emitted(), 1);
     }
 }

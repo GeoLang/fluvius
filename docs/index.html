@@ -163,13 +163,13 @@
     </ul>
   </div>
   <div class="card">
-    <h3>Prometheus Metrics (library only)</h3>
-    <p>Observability counters in exposition format. Nothing serves them over HTTP.</p>
+    <h3>Prometheus Metrics</h3>
+    <p>Counters in exposition format, served over HTTP for the life of a run when <code>[pipeline.metrics]</code> names a <code>bind</code> address.</p>
     <ul>
       <li>Events received/emitted/filtered/late</li>
-      <li>Average processing time</li>
+      <li>Average operator time per event</li>
       <li>Atomic lock-free counters</li>
-      <li>Rendered on demand by the caller</li>
+      <li>Scraped from the configured path, <code>/metrics</code> by default</li>
     </ul>
   </div>
   <div class="card">
@@ -198,7 +198,7 @@
       <li>Sources: WebSocket (a <code>ws://</code> or <code>wss://</code> url is a remote feed to connect to, a bare <code>host:port</code> binds a listener), File, Kafka, MQTT</li>
       <li>Sinks: WebSocket, File, Kafka, MQTT, stdout</li>
       <li>Operators: filter, geofence, proximity, trajectory, rate_limit, spatial_agg, CEP, map_match</li>
-      <li>Replay configuration replaces the source. Metrics and checkpoint sections are rejected</li>
+      <li>Replay configuration replaces the source. A metrics section serves the counters over HTTP, a checkpoint section is rejected</li>
     </ul>
   </div>
 </div>
@@ -237,7 +237,7 @@
     <tr><td>TOML topology DSL</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
     <tr><td>Map matching</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
     <tr><td>Checkpointing</td><td>lib</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-    <tr><td>Prometheus metrics</td><td>lib</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td></tr>
+    <tr><td>Prometheus metrics</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td></tr>
     <tr><td>Open source</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td></tr>
   </table>
   <p>lib means the crate ships the API but a running pipeline does not use it.</p>

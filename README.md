@@ -38,7 +38,7 @@ Zero JVM. Single binary (4 MB release build with default features, larger with `
 - **Replay mode** — Replay historical data at 1x, 10x, 100x, or max speed, from a topology or the library
 - **Topology DSL (TOML)** — Declare full pipelines without writing code
 - **Checkpointing** (library only): `fluvius_core::checkpoint` snapshots a `StateStore` with automatic GC. The topology runner keeps no state store, so it cannot checkpoint a pipeline
-- **Prometheus metrics** (library only): `fluvius_core::metrics` counts events and renders the exposition format. Nothing serves it over HTTP
+- **Prometheus metrics** — `[pipeline.metrics]` serves the exposition format over HTTP for the life of the run: events received, emitted, filtered and late, plus average operator time per event
 
 ## Quick Start
 
@@ -129,7 +129,16 @@ file = "historical.jsonl"
 speed = 10.0
 ```
 
-`[pipeline.metrics]` and `[pipeline.checkpoint]` parse, but the runner cannot act on either and fails with an error saying so rather than ignoring the section. Serving metrics needs a collector threaded through every stage, and checkpointing needs the operators to keep their state in a `StateStore`, neither of which exists. Set `enabled = false` to keep a metrics section in a config the runner will accept.
+`[pipeline.metrics]` serves the counters in Prometheus exposition format for as long as the run lasts. An address it cannot bind fails the run rather than leaving the pipeline unobservable. Set `enabled = false` to keep the section without serving anything:
+
+```toml
+[pipeline.metrics]
+enabled = true
+bind = "127.0.0.1:9090"
+path = "/metrics"
+```
+
+`[pipeline.checkpoint]` parses, but the runner cannot act on it and fails with an error saying so rather than ignoring the section. Checkpointing needs the operators to keep their state in a `StateStore`, which does not exist.
 
 `serve` runs the same wiring against live WebSocket endpoints, replacing whatever source and sink the topology declares:
 
@@ -172,7 +181,7 @@ The `geofence`, `proximity` and `trajectory` subcommands run a single operator o
 | TOML topology DSL | ✓ | ✗ | ✗ | ✗ |
 | Map matching | ✓ | ✗ | ✗ | ✗ |
 | Checkpointing | lib | ✓ | ✓ | ✓ |
-| Prometheus metrics | lib | ✓ | ✓ | ✗ |
+| Prometheus metrics | ✓ | ✓ | ✓ | ✗ |
 | Open source | ✓ | ✓ | ✓ | ✗ |
 
 `lib` means the crate ships the API but a running pipeline does not use it.
