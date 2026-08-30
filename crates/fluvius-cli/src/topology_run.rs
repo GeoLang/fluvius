@@ -1155,6 +1155,7 @@ topic = "alerts/geofence"
     }
 
     /// A variable no test sets, so the runner has to report it missing.
+    #[cfg(feature = "mqtt")]
     const UNSET_PASSWORD_VARIABLE: &str = "FLUVIUS_TEST_MQTT_PASSWORD_NEVER_SET";
 
     fn mqtt_source(username: Option<&str>, password_env: Option<&str>) -> SourceConfig {
