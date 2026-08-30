@@ -15,6 +15,7 @@ path = "src/main.rs"
 [features]
 kafka = ["fluvius-connectors/kafka"]
 mqtt = ["fluvius-connectors/mqtt"]
+tls = ["fluvius-connectors/tls"]
 
 [dependencies]
 fluvius-core = { path = "../fluvius-core" }

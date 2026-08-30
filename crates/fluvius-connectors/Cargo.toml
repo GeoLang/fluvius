@@ -7,6 +7,8 @@ license.workspace = true
 [features]
 kafka = ["dep:rdkafka"]
 mqtt = ["dep:rumqttc"]
+# only a wss:// websocket feed needs this, a default build talks ws:// and binds listeners
+tls = ["tokio-tungstenite/rustls-tls-webpki-roots"]
 
 [dependencies]
 fluvius-core = { path = "../fluvius-core" }

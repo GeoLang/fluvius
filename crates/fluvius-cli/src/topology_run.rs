@@ -39,11 +39,14 @@ pub async fn serve(
     if config.pipeline.source.is_some() || config.pipeline.sink.is_some() {
         eprintln!("serve: ignoring the topology source/sink, using the websocket binds");
     }
+    // stripped to host:port so a bind is never read back as a remote feed to dial
+    let source_bind = ws_bind(source_bind);
+    let sink_bind = ws_bind(sink_bind);
     config.pipeline.source = Some(SourceConfig::WebSocket {
-        url: source_bind.to_string(),
+        url: source_bind.clone(),
     });
     config.pipeline.sink = Some(SinkConfig::WebSocket {
-        url: sink_bind.to_string(),
+        url: sink_bind.clone(),
     });
 
     println!("Starting Fluvius stream processor");
@@ -409,12 +412,22 @@ fn resolve_source(config: &SourceConfig) -> Result<mpsc::Receiver<Event>, String
         }
         SourceConfig::WebSocket { url } => {
             let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
-            let bind = ws_bind(url);
-            tokio::spawn(async move {
-                if let Err(e) = fluvius_connectors::websocket::ws_source(&bind, tx).await {
-                    eprintln!("websocket source error: {e}");
+            match remote_feed_url(url)? {
+                Some(feed) => {
+                    let feed = feed.to_string();
+                    tokio::spawn(async move {
+                        fluvius_connectors::websocket::ws_remote_source(&feed, tx).await;
+                    });
                 }
-            });
+                None => {
+                    let bind = ws_bind(url);
+                    tokio::spawn(async move {
+                        if let Err(e) = fluvius_connectors::websocket::ws_source(&bind, tx).await {
+                            eprintln!("websocket source error: {e}");
+                        }
+                    });
+                }
+            }
             Ok(rx)
         }
         SourceConfig::Kafka {
@@ -588,11 +601,27 @@ fn spawn_sink(
     }
 }
 
+const PLAIN_WEBSOCKET_SCHEME: &str = "ws://";
+const SECURE_WEBSOCKET_SCHEME: &str = "wss://";
+
+/// A source url carrying a websocket scheme names a remote feed to connect to. A bare
+/// `host:port` is an address to bind a listener on instead.
+fn remote_feed_url(url: &str) -> Result<Option<&str>, String> {
+    if url.starts_with(SECURE_WEBSOCKET_SCHEME) && !cfg!(feature = "tls") {
+        return Err(format!(
+            "topology source url {url:?} requires building with --features tls"
+        ));
+    }
+    let is_feed =
+        url.starts_with(PLAIN_WEBSOCKET_SCHEME) || url.starts_with(SECURE_WEBSOCKET_SCHEME);
+    Ok(is_feed.then_some(url))
+}
+
 /// Strip the scheme and any path from a websocket url, leaving `host:port`.
 fn ws_bind(url: &str) -> String {
     let no_scheme = url
-        .strip_prefix("ws://")
-        .or_else(|| url.strip_prefix("wss://"))
+        .strip_prefix(PLAIN_WEBSOCKET_SCHEME)
+        .or_else(|| url.strip_prefix(SECURE_WEBSOCKET_SCHEME))
         .unwrap_or(url);
     no_scheme
         .split_once('/')
@@ -1006,6 +1035,42 @@ topic = "alerts/geofence"
     fn test_ws_bind_strips_scheme_and_path() {
         assert_eq!(ws_bind("ws://localhost:8080/events"), "localhost:8080");
         assert_eq!(ws_bind("127.0.0.1:9001"), "127.0.0.1:9001");
+    }
+
+    #[test]
+    fn test_a_websocket_scheme_selects_a_remote_feed() {
+        assert_eq!(
+            remote_feed_url("ws://localhost:8080/events").unwrap(),
+            Some("ws://localhost:8080/events")
+        );
+        assert_eq!(remote_feed_url("127.0.0.1:9001").unwrap(), None);
+        assert_eq!(remote_feed_url("localhost:8080").unwrap(), None);
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn test_a_secure_websocket_scheme_selects_a_remote_feed() {
+        assert_eq!(
+            remote_feed_url("wss://feed.example.com/events").unwrap(),
+            Some("wss://feed.example.com/events")
+        );
+    }
+
+    #[cfg(not(feature = "tls"))]
+    #[test]
+    fn test_a_secure_websocket_feed_requires_the_tls_feature() {
+        let err = remote_feed_url("wss://feed.example.com/events")
+            .err()
+            .unwrap();
+        assert!(err.contains("--features tls"), "{err}");
+    }
+
+    /// serve strips the scheme off its binds, so a bind written as a url still binds
+    /// a listener instead of dialing itself.
+    #[test]
+    fn test_a_stripped_bind_is_never_a_remote_feed() {
+        let bind = ws_bind("ws://127.0.0.1:9001/events");
+        assert_eq!(remote_feed_url(&bind).unwrap(), None);
     }
 
     // Feature-gated errors when compiled without the connector feature.

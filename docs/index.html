@@ -195,7 +195,7 @@
     <h3>Topology DSL (TOML)</h3>
     <p>Declare pipelines without writing code.</p>
     <ul>
-      <li>Sources: WebSocket (binds a listener, it does not connect to a remote feed), File, Kafka, MQTT</li>
+      <li>Sources: WebSocket (a <code>ws://</code> or <code>wss://</code> url is a remote feed to connect to, a bare <code>host:port</code> binds a listener), File, Kafka, MQTT</li>
       <li>Sinks: WebSocket, File, Kafka, MQTT, stdout</li>
       <li>Operators: filter, geofence, proximity, trajectory, rate_limit, spatial_agg, CEP, map_match</li>
       <li>Replay configuration replaces the source. Metrics and checkpoint sections are rejected</li>
@@ -249,9 +249,9 @@
     <pre>
 # Build from source
 git clone https://github.com/GeoLang/fluvius.git
-cd fluvius &amp;&amp; cargo build --release --features kafka,mqtt
-# The Kafka and MQTT connectors need their features, a default build rejects
-# such a topology at runtime.
+cd fluvius &amp;&amp; cargo build --release --features kafka,mqtt,tls
+# The Kafka and MQTT connectors and wss:// feeds need their features, a default
+# build rejects such a topology at runtime.
 
 # Run with a TOML topology
 fluvius run --topology pipeline.toml

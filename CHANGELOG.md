@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- 2026-08-30: a websocket source url with a `ws://` or `wss://` scheme is a remote
+  feed the runner connects to, reconnecting with a doubling delay capped at 30 s.
+  A bare `host:port`, and `serve --source-bind`, still bind a listener. `wss://`
+  needs the new `tls` feature.
 - 2026-08-30: MQTT source and sink sections take `username`, `password_env`,
   `qos` and `client_id`. `password_env` names an environment variable holding the
   password, and the run fails at startup naming the variable when it is unset.

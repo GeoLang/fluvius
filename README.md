@@ -28,7 +28,7 @@ Zero JVM. Single binary (4 MB release build with default features, larger with `
 
 ### Connectors
 
-- **WebSocket** — Source and sink for real-time browser/client integration. Both bind a listener and wait for clients, neither connects out to a remote feed
+- **WebSocket** — A source url with a `ws://` or `wss://` scheme is a remote feed the runner connects to, retrying with a doubling delay up to 30 s when the feed drops or refuses. A source given as `host:port`, and every sink, binds a listener and waits for clients instead. `wss://` needs `--features tls`
 - **File** — JSON lines input/output
 - **Kafka** (rdkafka): consumer source and producer sink over JSON events, consumer groups. Build with `--features kafka` (vendored librdkafka via cmake, no system libs needed).
 - **MQTT** (rumqttc): IoT pub/sub source and sink over JSON events. A topology sets `username`, `qos` (0, 1 or 2) and `client_id` alongside the broker URL and topic, and names the environment variable holding the password in `password_env`. The password is never written in the topology file, and a run stops at startup if the named variable is unset. Build with `--features mqtt` (pure Rust).
@@ -46,7 +46,7 @@ Zero JVM. Single binary (4 MB release build with default features, larger with `
 # Build from source
 git clone https://github.com/GeoLang/fluvius.git
 cd fluvius && cargo build --release
-# Kafka/MQTT topologies need their features: cargo build --release --features kafka,mqtt
+# Kafka, MQTT and wss:// feeds need their features: cargo build --release --features kafka,mqtt,tls
 
 # Run with a TOML topology
 fluvius run --topology pipeline.toml
