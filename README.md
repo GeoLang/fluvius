@@ -5,7 +5,7 @@
 
 Real-time geospatial stream processor. Sub-second latency processing for continuous spatial data streams — GPS tracks, IoT sensors, vehicle telemetry, drone feeds.
 
-Zero JVM. Single binary (4 MB release build with default features, larger with `--features kafka`).
+Zero JVM. Single binary (5 MB release build with default features, larger with `--features kafka`).
 
 [Documentation](https://geolang.github.io/fluvius/) · [GitHub](https://github.com/GeoLang/fluvius)
 
@@ -106,9 +106,9 @@ broker_url = "mqtt://localhost:1883"
 topic = "alerts/geofence"
 ```
 
-`run --topology` wires the configured source and sink (file, websocket, kafka, mqtt) and chains the declared operators: `filter`, `geofence`, `proximity`, `trajectory`, `spatial_agg`, `cep`, `rate_limit`, `map_match`.
+`run --topology` wires the configured source and sink (file, websocket, kafka, mqtt, and stdout as a sink) and chains the declared operators: `filter`, `geofence`, `proximity`, `trajectory`, `spatial_agg`, `cep`, `rate_limit`, `map_match`.
 
-A `filter` drops the events it rejects, so nothing downstream sees them. `rate_limit` is a token bucket over the whole stream, not per entity: it passes `max_per_second` events, bursting up to one second's worth, and drops the rest. The stateful operators emit their alerts and pass the event on, they never drop it. When the stream ends they are flushed, which is when `trajectory` emits its per-entity summary.
+A `filter` condition is one comparison of three whitespace-separated tokens, either `speed` against a number with `>`, `>=`, `<`, `<=`, `==` or `!=`, or `entity_id` against a quoted name with `==` or `!=`. A `cep` pattern step takes its condition in the same form. A `filter` drops the events it rejects, so nothing downstream sees them. `rate_limit` is a token bucket over the whole stream, not per entity: it passes `max_per_second` events, bursting up to one second's worth, and drops the rest. The stateful operators emit their alerts and pass the event on, they never drop it. When the stream ends they are flushed, which is when `trajectory` emits its per-entity summary.
 
 `[pipeline.window]` expires stateful operators when a window closes. `[pipeline.watermark]` drops events older than the watermark plus `max_lateness_secs`:
 
@@ -157,7 +157,7 @@ fluvius serve --topology pipeline.toml
 
 Send events to the source socket as JSON, one per WebSocket message, and every alert the pipeline produces is broadcast to the clients connected to the sink socket. Only clients connected at the time receive an alert, nothing is buffered. A `[pipeline.replay]` section still wins over the source, so `serve` then broadcasts a recording instead of listening on the source socket.
 
-The `geofence`, `proximity` and `trajectory` subcommands run a single operator over a file, without a topology.
+The `geofence`, `proximity` and `trajectory` subcommands run a single operator over a file, without a topology. `run --input events.jsonl --output alerts.jsonl` runs a file through a pipeline whose only stage passes every event, and `--min-speed` makes that stage a minimum speed in m/s instead.
 
 ## Architecture
 

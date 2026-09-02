@@ -44,12 +44,17 @@ All notable changes to this project will be documented in this file.
 - `map_match` is a topology operator: snap each event onto configured road
   segments and forward the snapped coordinates.
 
+- 2026-09-02: docs badge is 193 tests.
 - 2026-08-30: docs badge is 208 tests.
 - `PipelineConfig::metrics` is now `Option<MetricsConfig>`, so an absent section no
   longer reads as an enabled metrics endpoint.
 
 ### Removed
 
+- 2026-09-02: `fluvius_core::edge`, `fluvius_core::predict` and
+  `fluvius_core::tenant`. No pipeline, topology or CLI command reached them.
+  `SpatialIndex::query_nearest` and `SpatialIndex::query_radius` went with them,
+  since only their own tests called them.
 - 2026-08-30: `fluvius_core::pipeline::PipelineMetrics`. `Pipeline::run` returns the
   `Metrics` handle it updates, so there is one set of counters rather than two.
 - 2026-08-21: `fluvius_core::temporal_join`. No pipeline or topology reached it.

@@ -50,7 +50,7 @@
     <span class="badge">Tokio async</span>
     <span class="badge">AGPL-3.0</span>
     <span class="badge">4 crates</span>
-    <span class="badge">208 tests (cargo test --workspace)</span>
+    <span class="badge">193 tests (cargo test --workspace)</span>
     <span class="badge">Linux / macOS / Windows</span>
   </div>
 </header>
@@ -199,6 +199,7 @@
       <li>Sources: WebSocket (a <code>ws://</code> or <code>wss://</code> url is a remote feed to connect to, a bare <code>host:port</code> binds a listener), File, Kafka, MQTT</li>
       <li>Sinks: WebSocket, File, Kafka, MQTT, stdout</li>
       <li>Operators: filter, geofence, proximity, trajectory, rate_limit, spatial_agg, CEP, map_match</li>
+      <li>A filter condition, and a CEP pattern step condition, is a single comparison on <code>speed</code> or on <code>entity_id</code></li>
       <li>Replay configuration replaces the source. A metrics section serves the counters over HTTP, a checkpoint section makes the run resumable</li>
     </ul>
   </div>
@@ -260,6 +261,9 @@ fluvius run --topology pipeline.toml
 fluvius geofence --input events.jsonl --bounds "10.0,20.0,10.5,20.5" --zone-name warehouse
 fluvius proximity --input events.jsonl --threshold 100.0
 fluvius trajectory --input events.jsonl
+
+# Or filter a file with no topology at all
+fluvius run --input events.jsonl --output alerts.jsonl --min-speed 1.0
     </pre>
   </div>
 </section>

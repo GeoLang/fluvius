@@ -66,41 +66,6 @@ impl SpatialIndex {
             .collect()
     }
 
-    /// Query k-nearest neighbors to a point.
-    pub fn query_nearest(&self, lon: f64, lat: f64, k: usize) -> Vec<(String, f64)> {
-        let inner = self.inner.read().unwrap();
-        inner
-            .tree
-            .nearest_neighbor_iter(&[lon, lat])
-            .take(k)
-            .map(|e| {
-                let dist = ((e.geom()[0] - lon).powi(2) + (e.geom()[1] - lat).powi(2)).sqrt();
-                (e.data.clone(), dist)
-            })
-            .collect()
-    }
-
-    /// Query all entities within a given radius (in degrees) of a point.
-    pub fn query_radius(&self, lon: f64, lat: f64, radius_deg: f64) -> Vec<(String, f64)> {
-        let inner = self.inner.read().unwrap();
-        let aabb = AABB::from_corners(
-            [lon - radius_deg, lat - radius_deg],
-            [lon + radius_deg, lat + radius_deg],
-        );
-        inner
-            .tree
-            .locate_in_envelope(&aabb)
-            .filter_map(|e| {
-                let dist = ((e.geom()[0] - lon).powi(2) + (e.geom()[1] - lat).powi(2)).sqrt();
-                if dist <= radius_deg {
-                    Some((e.data.clone(), dist))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
     /// Get the current position of an entity.
     pub fn get_position(&self, entity_id: &str) -> Option<[f64; 2]> {
         let inner = self.inner.read().unwrap();
@@ -183,29 +148,6 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results.contains(&"v1".to_string()));
         assert!(results.contains(&"v2".to_string()));
-    }
-
-    #[test]
-    fn test_nearest_neighbor() {
-        let idx = SpatialIndex::new();
-        idx.update(&Event::now("v1", 0.0, 0.0));
-        idx.update(&Event::now("v2", 1.0, 1.0));
-        idx.update(&Event::now("v3", 5.0, 5.0));
-
-        let nearest = idx.query_nearest(0.1, 0.1, 2);
-        assert_eq!(nearest.len(), 2);
-        assert_eq!(nearest[0].0, "v1");
-    }
-
-    #[test]
-    fn test_radius_query() {
-        let idx = SpatialIndex::new();
-        idx.update(&Event::now("v1", 0.0, 0.0));
-        idx.update(&Event::now("v2", 0.5, 0.5));
-        idx.update(&Event::now("v3", 5.0, 5.0));
-
-        let results = idx.query_radius(0.0, 0.0, 1.0);
-        assert_eq!(results.len(), 2);
     }
 
     #[test]
