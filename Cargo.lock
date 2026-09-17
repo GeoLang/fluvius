@@ -447,7 +447,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dashmap",
- "rstar",
+ "rstar 0.13.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -464,7 +464,7 @@ dependencies = [
  "chrono",
  "fluvius-core",
  "geo",
- "rstar",
+ "rstar 0.13.0",
  "serde",
  "serde_json",
  "tokio",
@@ -602,7 +602,7 @@ dependencies = [
  "rand 0.10.2",
  "rand_pcg",
  "robust",
- "rstar",
+ "rstar 0.12.2",
  "sif-itree",
  "spade",
 ]
@@ -616,7 +616,7 @@ dependencies = [
  "approx",
  "num-traits",
  "rayon",
- "rstar",
+ "rstar 0.12.2",
  "serde",
  "spade",
 ]
@@ -1223,6 +1223,17 @@ name = "rstar"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "421400d13ccfd26dfa5858199c30a5d76f9c54e0dba7575273025b43c5175dbb"
+dependencies = [
+ "heapless",
+ "num-traits",
+ "smallvec",
+]
+
+[[package]]
+name = "rstar"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5912b862fa5ffb462607bfd1e35036c458c537921f508c8235a83d5f3987edfe"
 dependencies = [
  "heapless",
  "num-traits",
