@@ -58,11 +58,9 @@
 <div class="grid">
   <div class="card">
     <h3>R-tree Spatial Index</h3>
-    <p>Spatial queries over indexed entities. The proximity operator queries the index.</p>
+    <p>Entity positions kept current from the event stream. The proximity operator is the only caller.</p>
     <ul>
-      <li>k-Nearest Neighbor queries</li>
-      <li>Bounding box search</li>
-      <li>Radius queries</li>
+      <li>Bounding box search, the only query the index exposes</li>
       <li>Thread-safe concurrent updates</li>
     </ul>
   </div>

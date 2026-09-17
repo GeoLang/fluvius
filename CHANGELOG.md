@@ -30,6 +30,10 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- 2026-09-16: the readme and landing page still listed k-NN and radius queries on
+  the spatial index, removed with `query_nearest` and `query_radius` on 2026-09-02.
+  `query_bbox` is the only query left. The readme's sub-second latency claim went
+  too, nothing in the repo measures latency.
 - Count windows expire when they fill (`count >= size`) instead of comparing a
   wall-clock end against the event-time watermark.
 

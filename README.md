@@ -3,7 +3,7 @@
 [![CI](https://github.com/GeoLang/fluvius/actions/workflows/ci.yml/badge.svg)](https://github.com/GeoLang/fluvius/actions)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
-Real-time geospatial stream processor. Sub-second latency processing for continuous spatial data streams — GPS tracks, IoT sensors, vehicle telemetry, drone feeds.
+Real-time geospatial stream processor for continuous spatial data: GPS tracks, IoT sensors, vehicle telemetry, drone feeds.
 
 Zero JVM. Single binary (5 MB release build with default features, larger with `--features kafka`).
 
@@ -24,7 +24,7 @@ Zero JVM. Single binary (5 MB release build with default features, larger with `
 - **Complex Event Processing (CEP)** — Multi-step pattern sequences with spatial constraints and time windows
 - **Windowing** — Tumbling, sliding, session and count windows. `[pipeline.window]` expires stateful operators when a window closes. Count windows close when they fill; time windows close against the event-time watermark
 - **Watermarks** — Event-time processing with configurable late-event tolerance. Late events past `max_lateness_secs` are dropped
-- **R-tree spatial index** — the proximity operator queries the index. k-NN, radius and bounding box queries are on the library type
+- **R-tree spatial index** — entity positions, kept current from the event stream. Bounding box is the only query it exposes, and the proximity operator is the only caller
 
 ### Connectors
 
