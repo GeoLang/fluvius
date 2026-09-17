@@ -141,7 +141,7 @@ fn project_point_on_segment(point: &Point<f64>, segment: &Line<f64>) -> (Coord<f
         }
     };
 
-    let dist = Haversine::distance(Point::from(projected), *point);
+    let dist = Haversine.distance(Point::from(projected), *point);
     (projected, dist)
 }
 

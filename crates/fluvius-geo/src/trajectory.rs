@@ -72,7 +72,7 @@ impl TrajectoryOperator {
     fn compute_speed(p1: &TrajectoryPoint, p2: &TrajectoryPoint) -> f64 {
         let pt1 = Point::new(p1.lon, p1.lat);
         let pt2 = Point::new(p2.lon, p2.lat);
-        let distance = Haversine::distance(pt1, pt2);
+        let distance = Haversine.distance(pt1, pt2);
         let time_diff = (p2.timestamp - p1.timestamp).num_milliseconds() as f64 / 1000.0;
         if time_diff > 0.0 {
             distance / time_diff
@@ -88,7 +88,7 @@ impl TrajectoryOperator {
             .map(|w| {
                 let p1 = Point::new(w[0].lon, w[0].lat);
                 let p2 = Point::new(w[1].lon, w[1].lat);
-                Haversine::distance(p1, p2)
+                Haversine.distance(p1, p2)
             })
             .sum()
     }

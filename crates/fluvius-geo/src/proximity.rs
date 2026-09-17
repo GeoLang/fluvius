@@ -74,7 +74,7 @@ impl StatefulOperator for ProximityOperator {
                 continue;
             };
             let other_point = Point::new(lon, lat);
-            let distance = Haversine::distance(event_point, other_point);
+            let distance = Haversine.distance(event_point, other_point);
 
             if distance <= self.threshold_meters {
                 outputs.push(OutputEvent {
