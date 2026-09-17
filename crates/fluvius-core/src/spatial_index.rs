@@ -61,7 +61,7 @@ impl SpatialIndex {
         let aabb = AABB::from_corners([min_lon, min_lat], [max_lon, max_lat]);
         inner
             .tree
-            .locate_in_envelope(&aabb)
+            .locate_in_envelope(aabb)
             .map(|e| e.data.clone())
             .collect()
     }
