@@ -23,7 +23,7 @@ fluvius-geo = { path = "../fluvius-geo" }
 fluvius-connectors = { path = "../fluvius-connectors" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-geo = "0.29"
+geo = "0.33"
 serde_json = "1"
 
 [dev-dependencies]

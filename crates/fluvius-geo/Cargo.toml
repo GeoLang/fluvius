@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 fluvius-core = { path = "../fluvius-core" }
-geo = "0.29"
+geo = "0.33"
 rstar = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
