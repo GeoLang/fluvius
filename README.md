@@ -62,7 +62,7 @@ Tagged releases ship prebuilt binaries for Linux and macOS on x86_64 and aarch64
 
 ### Events
 
-Every source reads one JSON event per line or message. `id`, `timestamp` (RFC 3339), `entity_id`, `lon`, `lat` and `properties` are required. `speed` (m/s), `heading` and `altitude` are optional. An event that does not parse is skipped.
+Every source reads one JSON event per line or message. `id`, `timestamp` (RFC 3339), `entity_id`, `lon` and `lat` are required. `speed` (m/s), `heading`, `altitude` and `properties` are optional. An event that does not parse is skipped.
 
 ```json
 {"id":"e1","timestamp":"2026-01-01T12:00:00Z","entity_id":"truck-1","lon":10.0,"lat":20.0,"speed":12.5,"properties":{}}

@@ -24,6 +24,7 @@ pub struct Event {
     /// Optional speed in m/s.
     pub speed: Option<f64>,
     /// Additional properties.
+    #[serde(default)]
     pub properties: HashMap<String, serde_json::Value>,
 }
 
@@ -120,5 +121,13 @@ mod tests {
         let deserialized: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.entity_id, "test");
         assert!((deserialized.lon - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_event_without_properties_deserializes() {
+        let json = r#"{"id":"e1","timestamp":"2026-09-23T00:00:00Z","entity_id":"v1","lon":1.0,"lat":2.0,"altitude":null,"heading":null,"speed":null}"#;
+        let event: Event = serde_json::from_str(json).unwrap();
+        assert_eq!(event.entity_id, "v1");
+        assert!(event.properties.is_empty());
     }
 }
