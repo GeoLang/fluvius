@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Fluvius — Real-time Geospatial Stream Processing</title>
+<title>Fluvius: Geospatial Stream Processing in Rust</title>
 <style>
   :root { --accent: #0ea5e9; --bg: #0f172a; --surface: #1e293b; --text: #e2e8f0; --muted: #94a3b8; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -44,13 +44,12 @@
 <div class="container">
 <header>
   <h1>Fluvius</h1>
-  <p>Real-time geospatial stream processing. Zero JVM. Single binary.</p>
+  <p>A stream processor for GPS tracks, sensor readings and vehicle telemetry. One binary, no JVM, pipelines declared in TOML.</p>
   <div class="badges">
     <span class="badge">Rust</span>
     <span class="badge">Tokio async</span>
     <span class="badge">AGPL-3.0</span>
     <span class="badge">4 crates</span>
-    <span class="badge">193 tests (cargo test --workspace)</span>
     <span class="badge">Linux / macOS / Windows</span>
   </div>
 </header>
@@ -61,7 +60,7 @@
     <p>Entity positions kept current from the event stream. The proximity operator is the only caller.</p>
     <ul>
       <li>Bounding box search, the only query the index exposes</li>
-      <li>Thread-safe concurrent updates</li>
+      <li>Shared behind a read-write lock</li>
     </ul>
   </div>
   <div class="card">
@@ -69,76 +68,75 @@
     <p>Detect temporal and spatial patterns in event streams.</p>
     <ul>
       <li>Multi-step pattern sequences</li>
-      <li>Spatial constraints (near location X)</li>
-      <li>Configurable time windows</li>
-      <li>Per-entity state tracking</li>
+      <li>Optional <code>near = [lon, lat, radius_deg]</code> per step</li>
+      <li>The whole sequence must finish within <code>within_secs</code></li>
+      <li>Matched per entity</li>
     </ul>
   </div>
   <div class="card">
     <h3>Windowing Engine</h3>
-    <p>Event-time windows. A closing window is only a trigger to flush the stateful operators, the pipeline discards what the window accumulated, so a window is not an aggregation unit.</p>
+    <p>Event-time windows. A closing window only flushes the stateful operators. The pipeline discards what the window accumulated, so a window is not an aggregation unit.</p>
     <ul>
-      <li>Tumbling windows</li>
-      <li>Sliding windows</li>
-      <li>Session windows (gap-based)</li>
-      <li>Count-based windows (close when they fill)</li>
+      <li>Tumbling, <code>duration_secs</code></li>
+      <li>Sliding, <code>duration_secs</code> and <code>slide_secs</code></li>
+      <li>Session, <code>gap_secs</code></li>
+      <li>Count, <code>count</code>, closing when full</li>
     </ul>
   </div>
   <div class="card">
     <h3>Watermarks &amp; Late Events</h3>
-    <p>Event-time processing with out-of-order tolerance.</p>
+    <p>Out-of-order events within <code>max_lateness_secs</code> are kept. Only applies with a window set.</p>
     <ul>
-      <li>Configurable watermark delay</li>
-      <li>Late event detection</li>
-      <li>Tolerance thresholds</li>
+      <li>The watermark trails the newest event time by <code>max_lateness_secs</code></li>
+      <li>An event more than that behind the watermark is dropped</li>
+      <li>Dropped events count in <code>fluvius_events_late_total</code></li>
     </ul>
   </div>
   <div class="card">
     <h3>Geofence Operator</h3>
-    <p>Real-time geofence entry/exit detection.</p>
+    <p>Enter and exit events per entity and zone.</p>
     <ul>
-      <li>Multi-zone polygon support</li>
-      <li>Enter/exit transition events</li>
-      <li>Per-entity state tracking</li>
+      <li>Several zones per operator</li>
+      <li>A point on the edge counts as outside</li>
       <li>Arbitrary polygon shapes from the library API. A topology zone is a centre plus radius turned into a 64-segment circle, and the geofence subcommand takes a bounding box</li>
     </ul>
   </div>
   <div class="card">
     <h3>Proximity Alerts</h3>
-    <p>Detect when entities are near each other.</p>
+    <p>An alert when two entities come within <code>radius_m</code> metres.</p>
     <ul>
-      <li>Configurable radius thresholds</li>
-      <li>Haversine distance calculation</li>
-      <li>Multi-entity tracking</li>
-      <li>Real-time alert emission</li>
+      <li>Haversine distance</li>
+      <li>Candidates found through the R-tree</li>
+      <li>Keeps the last known position of each entity</li>
     </ul>
   </div>
   <div class="card">
     <h3>Trajectory Analysis</h3>
     <p>Analyze movement patterns of tracked entities.</p>
     <ul>
-      <li>Speed calculation</li>
-      <li>Stop detection</li>
-      <li>Distance accumulation</li>
-      <li>Path smoothing</li>
+      <li>Speed anomaly above <code>max_speed_mps</code></li>
+      <li>Stop alert after 30 s at or below 1 m/s</li>
+      <li>3-point smoothed position</li>
+      <li>Per-entity distance and average speed when a window closes or the stream ends</li>
     </ul>
   </div>
   <div class="card">
     <h3>Spatial Aggregation</h3>
-    <p>Real-time density grids and heatmaps over a fixed lon/lat grid.</p>
+    <p>Per-cell aggregates over a fixed lon/lat grid.</p>
     <ul>
-      <li>Configurable grid cell size</li>
-      <li>Count / Sum / Mean / Max / Min</li>
-      <li>Unique entity counting</li>
-      <li>Threshold-based emission</li>
+      <li>Cell size in degrees</li>
+      <li>Count, sum, mean, max or min, over event <code>speed</code> in a topology</li>
+      <li>Unique entity count per cell</li>
+      <li>A cell emits and resets at <code>threshold</code> events</li>
     </ul>
   </div>
   <div class="card">
     <h3>Map Matching</h3>
     <p>Snap GPS points to a road network.</p>
     <ul>
-      <li>Nearest-segment projection</li>
-      <li>Confidence scoring</li>
+      <li>Nearest road within <code>max_distance_m</code>, roads given in the topology</li>
+      <li>Confidence falls to 0 at <code>max_distance_m</code></li>
+      <li>An event with no road in range is marked <code>unmatched</code></li>
       <li>Trajectory matching (library only). The operator matches each event on its own, with no sequence logic</li>
     </ul>
   </div>
@@ -147,43 +145,41 @@
     <p>State snapshots for crash recovery. <code>[pipeline.checkpoint]</code> restores every operator at startup and snapshots them on an interval and when the run ends.</p>
     <ul>
       <li>Keyed by operator name</li>
-      <li>Automatic garbage collection past <code>max_retained</code></li>
+      <li>Snapshots past <code>max_retained</code> are deleted</li>
       <li>JSON-serialized snapshots</li>
     </ul>
   </div>
   <div class="card">
     <h3>Replay Mode</h3>
-    <p>Replay historical data at configurable speed.</p>
+    <p><code>[pipeline.replay]</code> replaces the source with a recorded file.</p>
     <ul>
-      <li>Real-time (1x) playback</li>
-      <li>Multiplied speed (10x, 100x)</li>
-      <li>Max-speed (instant replay)</li>
-      <li>Timing-preserving inter-event delays</li>
+      <li>Paced by the recorded event timestamps</li>
+      <li><code>speed</code> is any positive multiplier, 1.0 by default</li>
+      <li><code>inf</code> replays as fast as the pipeline accepts events</li>
     </ul>
   </div>
   <div class="card">
     <h3>Prometheus Metrics</h3>
-    <p>Counters in exposition format, served over HTTP for the life of a run when <code>[pipeline.metrics]</code> names a <code>bind</code> address.</p>
+    <p>Counters in exposition format, served over HTTP for the life of a run when the topology has a <code>[pipeline.metrics]</code> section, on <code>127.0.0.1:9090</code> by default.</p>
     <ul>
       <li>Events received/emitted/filtered/late</li>
       <li>Average operator time per event</li>
-      <li>Atomic lock-free counters</li>
-      <li>Scraped from the configured path, <code>/metrics</code> by default</li>
+            <li>Scraped from the configured path, <code>/metrics</code> by default</li>
     </ul>
   </div>
   <div class="card">
     <h3>Kafka Connector</h3>
-    <p>Enterprise event streaming integration.</p>
+    <p>Needs <code>--features kafka</code>.</p>
     <ul>
       <li>Consumer source (subscribe)</li>
       <li>Producer sink (publish)</li>
-      <li>Consumer groups</li>
-      <li>Built on rdkafka, with vendored librdkafka</li>
+      <li><code>group_id</code>, <code>fluvius</code> by default</li>
+      <li>rdkafka with a vendored librdkafka, built with cmake and a C compiler</li>
     </ul>
   </div>
   <div class="card">
     <h3>MQTT Connector</h3>
-    <p>IoT device integration via MQTT protocol.</p>
+    <p>Needs <code>--features mqtt</code>.</p>
     <ul>
       <li>Subscriber source</li>
       <li>Publisher sink</li>
@@ -225,43 +221,30 @@
   </div>
 </section>
 
-<section class="compare">
-  <h2>How Fluvius Compares</h2>
-  <table>
-    <tr><th>Feature</th><th>Fluvius</th><th>Kafka Streams</th><th>Apache Flink</th><th>Esri GeoEvent</th></tr>
-    <tr><td>Native spatial operators</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td></tr>
-    <tr><td>R-tree spatial index</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
-    <tr><td>CEP + spatial</td><td class="yes">✓</td><td class="no">✗</td><td class="yes">✓</td><td class="no">✗</td></tr>
-    <tr><td>Zero JVM</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
-    <tr><td>Single binary</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
-    <tr><td>TOML topology DSL</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
-    <tr><td>Map matching</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
-    <tr><td>Checkpointing</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-    <tr><td>Prometheus metrics</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td></tr>
-    <tr><td>Open source</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td></tr>
-  </table>
-</section>
-
 <section>
   <h2>Quick Start</h2>
   <div class="arch">
     <pre>
-# Build from source
-git clone https://github.com/GeoLang/fluvius.git
-cd fluvius &amp;&amp; cargo build --release --features kafka,mqtt,tls
-# The Kafka and MQTT connectors and wss:// feeds need their features, a default
-# build rejects such a topology at runtime.
+cargo install --path crates/fluvius-cli
+# Kafka, MQTT and wss:// feeds need their features, a default build
+# rejects such a topology at startup
+cargo install --path crates/fluvius-cli --features kafka,mqtt,tls
 
-# Run with a TOML topology
 fluvius run --topology pipeline.toml
 
-# Or use individual commands
+# one operator over a file, no topology
 fluvius geofence --input events.jsonl --bounds "10.0,20.0,10.5,20.5" --zone-name warehouse
 fluvius proximity --input events.jsonl --threshold 100.0
 fluvius trajectory --input events.jsonl
 
-# Or filter a file with no topology at all
+# keep only events at or above 1 m/s
 fluvius run --input events.jsonl --output alerts.jsonl --min-speed 1.0
+
+# live WebSocket in and out
+fluvius serve --topology pipeline.toml --source-bind 127.0.0.1:9001 --sink-bind 127.0.0.1:9002
+
+# one input event per line
+{"id":"e1","timestamp":"2026-01-01T12:00:00Z","entity_id":"truck-1","lon":10.0,"lat":20.0,"speed":12.5,"properties":{}}
     </pre>
   </div>
 </section>
@@ -273,6 +256,21 @@ fluvius run --input events.jsonl --output alerts.jsonl --min-speed 1.0
 [pipeline]
 name = "fleet-monitoring"
 
+# needs --features kafka,mqtt
+[pipeline.source]
+type = "kafka"
+brokers = ["localhost:9092"]
+topic = "gps-events"
+group_id = "fluvius-fleet"
+
+[pipeline.sink]
+type = "mqtt"
+broker_url = "mqtt://localhost:1883"
+topic = "alerts/geofence"
+username = "fluvius"
+password_env = "FLUVIUS_MQTT_PASSWORD"
+
+# radius is in degrees
 [[pipeline.operators]]
 type = "geofence"
 name = "depot-zone"
@@ -285,21 +283,10 @@ cell_size_deg = 0.1
 function = "count"
 threshold = 10
 
-[pipeline.source]
-type = "kafka"
-brokers = ["localhost:9092"]
-topic = "gps-events"
-group_id = "fluvius-fleet"
-
 [[pipeline.operators]]
 type = "rate_limit"
 name = "cap"
 max_per_second = 50.0
-
-[pipeline.sink]
-type = "mqtt"
-broker_url = "mqtt://localhost:1883"
-topic = "alerts/geofence"
     </pre>
   </div>
 </section>
@@ -310,8 +297,7 @@ topic = "alerts/geofence"
 </div>
 
 <footer>
-  <p>Fluvius is part of the <strong>GeoLang</strong> geospatial open-source ecosystem.</p>
-  <p>AGPL-3.0-or-later &middot; Built with Rust &middot; Powered by Tokio</p>
+  <p>Part of the <strong>GeoLang</strong> geospatial platform.</p>
   <p>&copy; 2026 Grok Image Compression Inc. Licensed under AGPL-3.0-or-later.</p>
 </footer>
 </div>
