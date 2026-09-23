@@ -30,6 +30,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- 2026-09-23: the watermark drops an event more than `max_lateness_secs` behind the
+  newest event time. It dropped only at twice that, and an out-of-order event
+  inside the window moved the watermark back.
 - 2026-09-23: an event with no `properties` key deserializes with empty properties
   instead of being rejected.
 - 2026-09-16: the readme and landing page still listed k-NN and radius queries on

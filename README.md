@@ -23,7 +23,7 @@ It runs as one `fluvius` binary, with no JVM.
 
 - **Complex event processing**: per-entity pattern sequences within `within_secs`, each step a condition plus an optional `near = [lon, lat, radius_deg]`.
 - **Windowing**: tumbling, sliding, session and count windows. `[pipeline.window]` flushes the stateful operators when a window closes. Count windows close when they fill, time windows close against the event-time watermark.
-- **Watermarks**: with a window set, the watermark trails the newest event time by `max_lateness_secs`, and an event more than `max_lateness_secs` behind the watermark is dropped and counted as late.
+- **Watermarks**: with a window set, the watermark trails the newest event time by `max_lateness_secs`, and an event before the watermark is dropped and counted as late.
 - **R-tree spatial index**: entity positions kept current from the stream. The proximity operator is its only caller, through a bounding box query.
 
 ### Connectors

@@ -24,21 +24,14 @@ impl Watermark {
     }
 
     /// Advance the watermark based on an observed event timestamp.
-    /// Returns true if the event is on-time, false if late.
+    /// Returns false, counting the event as late, when it is before the watermark.
     pub fn advance(&mut self, event_time: &DateTime<Utc>) -> bool {
-        if *event_time >= self.current {
-            // Advance watermark (with lateness buffer)
-            self.current = *event_time - self.max_lateness;
-            true
-        } else if *event_time >= self.current - self.max_lateness {
-            // Late but within tolerance
+        if *event_time < self.current {
             self.late_count += 1;
-            true
-        } else {
-            // Too late, beyond tolerance
-            self.late_count += 1;
-            false
+            return false;
         }
+        self.current = self.current.max(*event_time - self.max_lateness);
+        true
     }
 
     /// Get the current watermark position.
@@ -81,7 +74,7 @@ mod tests {
 
         wm.advance(&ts1);
         let accepted = wm.advance(&ts2);
-        assert!(!accepted); // Too late (ts2=90, watermark=98, tolerance window is 96..98)
+        assert!(!accepted); // Too late (ts2=90, watermark=98)
         assert_eq!(wm.late_count(), 1);
     }
 
@@ -89,11 +82,36 @@ mod tests {
     fn test_within_lateness_tolerance() {
         let mut wm = Watermark::new(Duration::seconds(10));
         let ts1 = DateTime::from_timestamp(100, 0).unwrap();
-        let ts2 = DateTime::from_timestamp(88, 0).unwrap(); // Late but within tolerance
+        let ts2 = DateTime::from_timestamp(92, 0).unwrap(); // Out of order but within tolerance
 
         wm.advance(&ts1); // watermark = 90
-        let accepted = wm.advance(&ts2); // 88 >= 90 - 10 = 80, so within tolerance
+        let accepted = wm.advance(&ts2);
         assert!(accepted);
+        assert_eq!(wm.late_count(), 0);
+    }
+
+    #[test]
+    fn test_event_exactly_at_the_watermark_is_kept() {
+        let mut wm = Watermark::new(Duration::seconds(10));
+        wm.advance(&DateTime::from_timestamp(100, 0).unwrap());
+        assert!(wm.advance(&DateTime::from_timestamp(90, 0).unwrap()));
+        assert_eq!(wm.late_count(), 0);
+    }
+
+    #[test]
+    fn test_event_one_second_before_the_watermark_is_dropped() {
+        let mut wm = Watermark::new(Duration::seconds(10));
+        wm.advance(&DateTime::from_timestamp(100, 0).unwrap());
+        assert!(!wm.advance(&DateTime::from_timestamp(89, 0).unwrap()));
         assert_eq!(wm.late_count(), 1);
+    }
+
+    #[test]
+    fn test_out_of_order_event_does_not_move_the_watermark_back() {
+        let mut wm = Watermark::new(Duration::seconds(10));
+        wm.advance(&DateTime::from_timestamp(100, 0).unwrap());
+        assert!(wm.advance(&DateTime::from_timestamp(95, 0).unwrap()));
+        assert_eq!(*wm.current(), DateTime::from_timestamp(90, 0).unwrap());
+        assert!(!wm.advance(&DateTime::from_timestamp(76, 0).unwrap()));
     }
 }

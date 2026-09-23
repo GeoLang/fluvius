@@ -88,7 +88,7 @@
     <p>Out-of-order events within <code>max_lateness_secs</code> are kept. Only applies with a window set.</p>
     <ul>
       <li>The watermark trails the newest event time by <code>max_lateness_secs</code></li>
-      <li>An event more than that behind the watermark is dropped</li>
+      <li>An event before the watermark is dropped</li>
       <li>Dropped events count in <code>fluvius_events_late_total</code></li>
     </ul>
   </div>
