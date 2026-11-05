@@ -44,6 +44,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- 2026-11-04: CI and the release workflow call the reusable workflows in
+  `GeoLang/.github`. The `fluvius-<target>.tar.gz` archives are unchanged.
 - 2026-08-21: proximity looks up neighbours in the R-tree spatial index over a
   bounding box sized from the threshold, instead of scanning every known position.
 - 2026-08-16: file sink writes each event as one flushed jsonl line.
