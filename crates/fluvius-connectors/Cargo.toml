@@ -13,7 +13,7 @@ tls = ["tokio-tungstenite/rustls-tls-webpki-roots"]
 [dependencies]
 fluvius-core = { path = "../fluvius-core" }
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures = "0.3"
