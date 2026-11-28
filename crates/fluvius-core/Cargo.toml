@@ -12,7 +12,7 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 dashmap = "6"
 rstar = "0.13"
-toml = "0.8"
+toml = "1.0"
 
 [dev-dependencies]
 tokio-test = "0.4"
